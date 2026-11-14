@@ -68,7 +68,7 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
                 echo "sendkey ret" | socat - UNIX-CONNECT:/tmp/qemu-monitor.sock 2>/dev/null || true
             fi
 
-            if grep -Eq "ALL_BENCHMARKS_FINISHED|\\[TEST_COMPLETE\\]|\\[NVX_3D_RAPID_RESULT\\]" "$NVX_RUN_LOG" 2>/dev/null; then
+            if grep -Eq "ALL_BENCHMARKS_FINISHED|\\[NVX_3D_RAPID_RESULT\\]" "$NVX_RUN_LOG" 2>/dev/null; then
                 if grep -Fq "[NVX_3D_RAPID_RESULT]" "$NVX_RUN_LOG" 2>/dev/null; then
                     echo "==> Focused 3D test completed. Sending soft ACPI powerdown..."
                 else

@@ -179,6 +179,10 @@ echo [ALL_BENCHMARKS_FINISHED] Status: PASS >> C:\test_accel.log
 echo [TEST] ALL TESTS COMPLETE >> C:\test_accel.log
 EOF
 unix2dos "$NVX_MOUNT/test_accel/run_test.bat" 2>/dev/null || true
+NVX_STARTUP="$(find "$NVX_MOUNT" -maxdepth 5 -type d -ipath '*/programs/startup' -print -quit)"
+if [ -n "$NVX_STARTUP" ]; then
+    cp -v "$NVX_MOUNT/test_accel/run_test.bat" "$NVX_STARTUP/run_accel_test.bat"
+fi
 
 if [ "${NVX_RAPID_3D:-0}" = "1" ]; then
     mkdir -p "$NVX_MOUNT/test_accel"

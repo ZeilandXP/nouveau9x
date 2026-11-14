@@ -1403,5 +1403,19 @@ Relevant files: `mesa_patches/nvx_xf86drm.c`,
 - Updated `test/update_disk_driver_user.sh` to stage `ucrtbase.dll` into `%SystemRoot%\System32` and `SysWOW64`.
 - Version bumped to 3.0.0.182 in `dist_full/nvx.inf` and `test/test_full_driver.sh`.
 
+### Revision 3.0.0.183 — Fix test harness race and route wglgears logs to COM1 serial
+
+- **Direct COM1 Serial Logging in wglgears**: Routed all `log_out(...)` statements in `test/3d_tests/glxgears_main.cpp`
+  directly to `\\.\COM1` serial port (identical to `test_gpu_accel.c`) so that test execution traces are captured
+  in real-time in the host serial log.
+- **Auto-retry Race Condition Fix**: In `test/run_vfio_xp_autoretry.sh`, removed `[TEST_COMPLETE]` from the early
+  shutdown termination check so the runner waits for `ALL_BENCHMARKS_FINISHED` or `[NVX_3D_RAPID_RESULT]`, ensuring
+  `wglgears.exe` runs to full completion before ACPI soft powerdown.
+- **Synchronized Startup Batch Script**: Updated `test/update_disk_driver_user.sh` to automatically copy `run_test.bat`
+  to `Startup/run_accel_test.bat` so guest test startup is consistently synchronized across runs.
+- Rebuilt `test/3d_tests/wglgears.exe` and `wglgears32.exe`.
+- Version bumped to 3.0.0.183 in `dist_full/nvx.inf` and `test/test_full_driver.sh`.
+
+
 
 

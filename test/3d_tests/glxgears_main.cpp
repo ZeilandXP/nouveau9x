@@ -345,6 +345,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 }
 
 static int g_autoExitSeconds = 0;
+static HANDLE g_hCom1 = INVALID_HANDLE_VALUE;
 
 static void log_out(const char *fmt, ...) {
 	char buf[512];
@@ -355,6 +356,16 @@ static void log_out(const char *fmt, ...) {
 
 	printf("%s", buf);
 	fflush(stdout);
+
+	if (g_hCom1 == INVALID_HANDLE_VALUE) {
+		g_hCom1 = CreateFileA("\\\\.\\COM1", GENERIC_WRITE,
+		                      FILE_SHARE_READ | FILE_SHARE_WRITE,
+		                      NULL, OPEN_EXISTING, 0, NULL);
+	}
+	if (g_hCom1 != INVALID_HANDLE_VALUE) {
+		DWORD written;
+		WriteFile(g_hCom1, buf, (DWORD)strlen(buf), &written, NULL);
+	}
 
 	FILE *fp = fopen("C:\\wglgears.log", "a");
 	if (fp) {
