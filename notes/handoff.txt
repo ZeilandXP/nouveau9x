@@ -1,12 +1,13 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 14, 2026 after version `v3.0.0.189`.
+Updated November 14, 2026 after version `v3.0.0.190`.
 
-## Current status (v3.0.0.189)
+## Current status (v3.0.0.190)
 
-- Reordered test execution in `test/update_disk_driver_user.sh` so `wglgears.exe` runs before `test_gpu_accel.exe`, ensuring clean channel execution.
-- Added staging and deployment for `d3d8.dll` and `ddraw.dll` alongside `d3d9.dll`, `wined3d.dll`, and `libwine.dll` in `dist_full/install.bat` and `test/update_disk_driver_user.sh`.
-- Compiled and synced `dist_full/wglgears.exe` and `test/3d_tests/wglgears.exe` with direct Mesa ICD context fallback (`DrvCreateContext` and `DrvSetContext`).
+- Fixed display driver pixel format descriptor flags in `src_disp/opengl.c`: Removed non-standard `PFD_SWAP_COPY`/`PFD_SUPPORT_GDI` flags so all advertised formats are standard hardware double-buffered ICD formats, enabling generic GDI `ChoosePixelFormat` to bind hardware acceleration automatically.
+- Silenced noisy `0x200`/`0x201` debug logging during pixel format queries.
+- Extended NVC0 batch fence wait timeout in `src_driver/nvx_gsp.c` from 1s to 5s.
+- Protected graphics channel from premature wedging: only latch `GspGraphicsChannelFaulted = TRUE` on verified PGRAPH trap/interrupt hardware error or MMU fault.
 - Maintained clean `mesa/` submodule at commit `cc2dcf9abdc6`.
 
 The latest completed VFIO run `.149` booted and shut down normally. The

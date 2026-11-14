@@ -3453,9 +3453,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
     const uint32_t *nvc0Dwords,ULONG dwordCount,
     PVOID pushVirtual,ULONG64 pushGpuVa,ULONG pushBytes,ULONG64 fenceValue)
 {
-    static ULONG successTraceCount=0;
     static ULONG drawTraceCount=0;
-    static ULONG cubeDrawTraceCount=0;
     PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
     PUCHAR scratch;
     volatile ULONG *userd,*fence;
@@ -3519,11 +3517,11 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
                                      0x30090),dev->GspGraphicsSubmitToken);
     VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
                               dev->GspGraphicsRunlistBase+0x90),2U);
-    for(wait=0;wait<10000U;wait++) {
+    for(wait=0;wait<50000U;wait++) {
         if(fence[0]==(ULONG)fenceValue) {
             __sync_synchronize();
             dev->Nvx3dCompletedFence=fenceValue;
-            if(drawTraceCount<8U) {
+            if(drawTraceCount<4U) {
                 ULONG primitive,vertexStart,vertexCount;
                 if(NvxGspFindNvc0Draw(nvc0Dwords,dwordCount,&primitive,
                                       &vertexStart,&vertexCount)) {
@@ -3536,39 +3534,6 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
                     LogStr(" fence=");LogHex(fenceValue);
                     LogStr(" observed=");LogHex(fence[0]);LogStr("\n");
                 }
-            }
-            if(cubeDrawTraceCount<4U) {
-                ULONG primitive,vertexStart,vertexCount;
-                if(NvxGspFindNvc0Draw(nvc0Dwords,dwordCount,&primitive,
-                                      &vertexStart,&vertexCount)&&
-                   primitive==7U&&vertexCount==24U) {
-                    LogStr("NVX [NVC0-CUBE-DRAW]: completed index=");
-                    LogHex(cubeDrawTraceCount++);LogStr(" sourceVA=");
-                    LogHex(pushGpuVa);LogStr(" start=");LogHex(vertexStart);
-                    LogStr(" count=");LogHex(vertexCount);
-                    LogStr(" fence=");LogHex(fenceValue);
-                    LogStr(" observed=");LogHex(fence[0]);LogStr("\n");
-                }
-            }
-            if(successTraceCount==0) {
-                ULONG traceIndex;
-                successTraceCount++;
-                LogStr("NVX [NVC0-BATCH]: first completion sourceVA=");
-                LogHex(pushGpuVa);LogStr(" submittedVA=");LogHex(pushVa);
-                LogStr(" dwords=");LogHex(totalDwords);
-                LogStr(" gpGet=");LogHex(userd[0x88/4]);
-                LogStr(" gpPut=");LogHex(userd[0x8c/4]);
-                LogStr(" fence=");LogHex(fence[0]);LogStr("\n");
-                for(traceIndex=0;traceIndex<totalDwords;traceIndex++) {
-                    if((traceIndex&7U)==0) {
-                        LogStr("NVX [NVC0-BATCH]: stream[");
-                        LogHex(traceIndex);LogStr("]");
-                    }
-                    LogStr(" ");LogHex(push[traceIndex]);
-                    if((traceIndex&7U)==7U||traceIndex+1U==totalDwords)
-                        LogStr("\n");
-                }
-                NvxGspLogPbdmaFault(dev);
             }
             __sync_lock_release(&NvxGrUserSubmitBusy);
             return TRUE;
@@ -3590,7 +3555,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
                                          0x30090),dev->GspGraphicsSubmitToken);
         VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
                                   dev->GspGraphicsRunlistBase+0x90),2U);
-        for(wait=0;wait<10000U;wait++) {
+        for(wait=0;wait<50000U;wait++) {
             if(fence[0]==(ULONG)fenceValue) {
                 __sync_synchronize();
                 dev->Nvx3dCompletedFence=fenceValue;
@@ -3642,6 +3607,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
             LogStr(" state=");LogHex(channelState);LogStr("\n");
         }
     }
+    BOOLEAN realHardwareFault=FALSE;
     if(dev->Bar0Length>=0x400140) {
         ULONG graphIntr=VideoPortReadRegisterUlong((PULONG)
             ((PUCHAR)dev->Bar0MmioVirtual+0x400100));
@@ -3655,8 +3621,16 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
         LogStr(" TRAP=");LogHex(graphTrap);
         LogStr(" TRAP_EN=");LogHex(graphTrapEnable);
         LogStr(" INTR_EN=");LogHex(graphIntrEnable);LogStr("\n");
+        if((graphTrap&graphTrapEnable)!=0||(graphIntr&graphIntrEnable)!=0)
+            realHardwareFault=TRUE;
     }
-    dev->GspGraphicsChannelFaulted=TRUE;
+    if(dev->GspMmuFaultQueued) realHardwareFault=TRUE;
+    if(realHardwareFault) {
+        dev->GspGraphicsChannelFaulted=TRUE;
+        LogStr("NVX [NVC0-BATCH]: verified hardware fault; channel marked faulted\n");
+    } else {
+        LogStr("NVX [NVC0-BATCH]: timeout without PGRAPH error; channel preserved\n");
+    }
     LogStr("NVX [NVC0-BATCH]: submission did not complete; fence=");
     LogHex(fenceValue);LogStr(" observed=");LogHex(fence[0]);LogStr("\n");
     __sync_lock_release(&NvxGrUserSubmitBusy);

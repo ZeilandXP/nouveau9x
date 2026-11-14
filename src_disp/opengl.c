@@ -36,8 +36,6 @@ DrvEscape(SURFOBJ *pso,ULONG iEsc,ULONG cjIn,PVOID pvIn,
             requested==NVX_ESCAPE_3D_CLIENT_OPEN ||
             requested==NVX_ESCAPE_3D_CLIENT_CLOSE ||
             requested==NVX_ESCAPE_3D_CHANNEL_LEASE;
-        if(requested==OPENGL_GETINFO)
-            NvxDispLogEvent(0x200,iEsc,requested,returned);
         return returned;
     }
     if(iEsc==OPENGL_GETINFO) {
@@ -46,8 +44,6 @@ DrvEscape(SURFOBJ *pso,ULONG iEsc,ULONG cjIn,PVOID pvIn,
            !pso||!pso->dhpdev) return 0;
         memcpy(&subEscape,pvIn,sizeof(subEscape));
         returned=NvxBuildOpenGlDriverInfo(subEscape,pvOut,cjOut);
-        NvxDispLogEvent(0x201,subEscape,returned,
-                        returned?(ULONG)((NVX_OPENGL_DRIVER_INFO *)pvOut)->Version:0);
         return returned;
     }
 
@@ -199,12 +195,13 @@ DrvDescribePixelFormat(
 
     if (iPixelFormat % 2 == 1) {
         /* ICD-backed double-buffered format; presentation copies the back
-           surface into the scanout surface. */
+           surface into the scanout surface. Note: Do NOT set PFD_SWAP_COPY or
+           PFD_NEED_PALETTE which causes Windows GDI to classify as generic. */
         ppfd->dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL |
-                        PFD_DOUBLEBUFFER | PFD_SWAP_COPY;
+                        PFD_DOUBLEBUFFER;
     } else {
-        ppfd->dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL |
-                        PFD_SUPPORT_GDI;
+        /* Single-buffered OpenGL format */
+        ppfd->dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL;
     }
 
     return NVX_DRIVER_PIXEL_FORMATS;
