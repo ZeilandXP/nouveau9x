@@ -58,3 +58,18 @@ EXPORTS
     strrchr = msvcrt.strrchr
     strstr = msvcrt.strstr
     strtoul = msvcrt.strtoul
+    InitializeConditionVariable
+    WakeConditionVariable
+    WakeAllConditionVariable
+    SleepConditionVariableCS
+    InitOnceExecuteOnce
+    SetThreadDescription
+    D3DKMTCloseAdapter
+    D3DKMTCreateDCFromMemory
+    D3DKMTCreateDevice
+    D3DKMTDestroyDCFromMemory
+    D3DKMTDestroyDevice
+    D3DKMTOpenAdapterFromGdiDisplayName
+    D3DKMTOpenAdapterFromLuid
+    D3DKMTQueryVideoMemoryInfo
+    D3DKMTSetVidPnSourceOwner

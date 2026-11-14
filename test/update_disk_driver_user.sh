@@ -137,6 +137,19 @@ if [ -f "$NVX_ROOT/test/3d_tests/wglgears32.exe" ]; then
     cp -v "$NVX_ROOT/test/3d_tests/wglgears32.exe" "$NVX_MOUNT/test_accel/x86/wglgears32.exe"
 fi
 
+if [ -f "$NVX_ROOT/test/ucrtbase.dll" ]; then
+    cp -v "$NVX_ROOT/test/ucrtbase.dll" "$NVX_SYSTEM32/ucrtbase.dll"
+    mkdir -p "$NVX_MOUNT/test_accel"
+    cp -v "$NVX_ROOT/test/ucrtbase.dll" "$NVX_MOUNT/test_accel/ucrtbase.dll"
+fi
+if [ -f "$NVX_ROOT/test/ucrtbase32.dll" ]; then
+    if [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ]; then
+        cp -v "$NVX_ROOT/test/ucrtbase32.dll" "$NVX_MOUNT/WINDOWS/SysWOW64/ucrtbase.dll"
+    fi
+    mkdir -p "$NVX_MOUNT/test_accel/x86"
+    cp -v "$NVX_ROOT/test/ucrtbase32.dll" "$NVX_MOUNT/test_accel/x86/ucrtbase.dll"
+fi
+
 cat << 'EOF' > "$NVX_MOUNT/test_accel/run_test.bat"
 @echo off
 cd /d C:\test_accel

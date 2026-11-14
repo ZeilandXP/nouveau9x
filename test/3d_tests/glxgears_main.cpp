@@ -427,6 +427,27 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	}
 
 	/*
+	 * Query the display driver's OPENGL_GETINFO escape to warm up OPENGL32's
+	 * ICD binding cache and verify the display driver name.
+	 */
+	{
+		DWORD escapeCode = 4353; /* NVX_OPENGL_GETINFO_ESCAPE */
+		if (ExtEscape(hDC, QUERYESCSUPPORT, sizeof(escapeCode), (LPCSTR)&escapeCode, 0, NULL) > 0) {
+			DWORD subEscape = 0;
+			struct {
+				DWORD version;
+				DWORD driverVersion;
+				WCHAR driverName[MAX_PATH + 1];
+			} info;
+			memset(&info, 0, sizeof(info));
+			if (ExtEscape(hDC, 4353, sizeof(subEscape), (LPCSTR)&subEscape, sizeof(info), (LPSTR)&info) > 0) {
+				log_out("[WGLGEARS] OPENGL_GETINFO: name=%ls ver=%lu drvVer=%lu\n",
+				        info.driverName, (unsigned long)info.version, (unsigned long)info.driverVersion);
+			}
+		}
+	}
+
+	/*
 	 * Warm-up: call OPENGL32's wglDescribePixelFormat on our window DC.
 	 * This forces OPENGL32 to load the Mesa ICD and register all ICD pixel
 	 * formats before ChoosePixelFormat runs. Without it, only GDI formats
@@ -434,11 +455,12 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	 * Pass a real buffer — some XP OPENGL32 builds dereference ppfd even
 	 * when cjpfd=0 is passed for a count-only query.
 	 */
+	typedef int (WINAPI *PFNWGLDPF)(HDC, int, UINT, LPPIXELFORMATDESCRIPTOR);
+	PFNWGLDPF wglDPF = NULL;
 	{
-		typedef int (WINAPI *PFNWGLDPF)(HDC, int, UINT, LPPIXELFORMATDESCRIPTOR);
 		HMODULE hGL = GetModuleHandleA("opengl32.dll");
 		if (!hGL) hGL = LoadLibraryA("opengl32.dll");
-		PFNWGLDPF wglDPF = hGL ?
+		wglDPF = hGL ?
 		    (PFNWGLDPF)(void*)GetProcAddress(hGL, "wglDescribePixelFormat") : NULL;
 		if (wglDPF) {
 			PIXELFORMATDESCRIPTOR warmPfd;
@@ -464,22 +486,27 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	        PixelFormat, (unsigned long)actualPfd.dwFlags,
 	        (actualPfd.dwFlags & PFD_GENERIC_FORMAT) ? "YES" : "NO");
 
-	/* If Windows GDI chose a software/generic format (PFD_GENERIC_FORMAT),
-	   search ALL advertised formats (including ICD formats) for a hardware-
-	   accelerated one. We scan up to 1024 and stop when DescribePixelFormat
-	   returns 0 (no more formats). We do NOT rely on DescribePixelFormat(hDC,1,0,NULL)
-	   for the count — that goes through GDI32 which only knows about the 2 nvxdisp
-	   formats and returns 2, missing all the ICD-provided Mesa formats at indices 3+. */
-	if (actualPfd.dwFlags & PFD_GENERIC_FORMAT) {
+	/* If Windows GDI chose a software/generic format (PFD_GENERIC_FORMAT) or
+	   returned a generic fallback format, search ALL advertised formats
+	   (including ICD formats) for a hardware-accelerated one using both
+	   wglDescribePixelFormat and DescribePixelFormat. */
+	if ((actualPfd.dwFlags & PFD_GENERIC_FORMAT) || PixelFormat <= 36) {
 		int foundFmt = 0;
-		log_out("[WGLGEARS] ChoosePixelFormat returned generic fmt=%u flags=0x%lx; scanning for HW format\n",
+		log_out("[WGLGEARS] Candidate fmt=%u flags=0x%lx; scanning for HW format\n",
 		        PixelFormat, (unsigned long)actualPfd.dwFlags);
 		for (int fmt = 1; fmt <= 1024; fmt++) {
 			PIXELFORMATDESCRIPTOR candidate;
 			memset(&candidate, 0, sizeof(candidate));
-			int cnt = DescribePixelFormat(hDC, fmt, sizeof(candidate), &candidate);
+			candidate.nSize = sizeof(candidate);
+			int cnt = 0;
+			if (wglDPF) {
+				cnt = wglDPF(hDC, fmt, sizeof(candidate), &candidate);
+			}
 			if (cnt == 0) {
-				log_out("[WGLGEARS] DescribePixelFormat returned 0 at fmt=%d; stopping scan\n", fmt);
+				cnt = DescribePixelFormat(hDC, fmt, sizeof(candidate), &candidate);
+			}
+			if (cnt == 0) {
+				log_out("[WGLGEARS] Formats exhausted at fmt=%d; stopping scan\n", fmt);
 				break;
 			}
 			if ((candidate.dwFlags & (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER)) ==
@@ -496,7 +523,7 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 			}
 		}
 		if (!foundFmt) {
-			log_out("[WGLGEARS] WARNING: No HW format found in scan; falling back to generic fmt=%u\n", PixelFormat);
+			log_out("[WGLGEARS] WARNING: No HW format found in scan; falling back to fmt=%u\n", PixelFormat);
 		}
 	}
 

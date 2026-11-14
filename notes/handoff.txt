@@ -1380,4 +1380,28 @@ Relevant files: `mesa_patches/nvx_xf86drm.c`,
   60 FPS rendering.
 - Deployed and verified both `test_gpu_accel.exe` (52.2 FPS) and `wglgears.exe` (55-63 FPS) under hardware acceleration.
 
+### Revision 3.0.0.181 — Display driver OpenGL DDI registration & test isolation
+
+- Enabled OpenGL DDI hooks (`DrvDescribePixelFormat`, `DrvSetPixelFormat`, `DrvSwapBuffers`) in `src_disp/enable.c`
+  via `NVX_ENABLE_EXPERIMENTAL_OPENGL_DDI=1`.
+- Isolated D3D9 device creation probe window in `test/test_gpu_accel.c` using a dedicated popup window to prevent
+  flashing and display mode reset on the main window.
+- Hidden window on exit (`ShowWindow(hwnd, SW_HIDE)`) to avoid lingering window frames.
+- Initialized format scanning diagnostic in `test/3d_tests/glxgears_main.cpp`.
+
+### Revision 3.0.0.182 — WineD3D Vista/XP shim, wglgears format discovery, and installer batch script
+
+- **Wglgears Hardware Acceleration**: Added `OPENGL_GETINFO` escape warm-up in `test/3d_tests/glxgears_main.cpp`
+  to trigger `OPENGL32.DLL`'s ICD dispatch cache. Extended format scanning to query `wglDescribePixelFormat`
+  across all format indices (1..1024) to locate ICD formats (indices 37+) and select format 63 (NV170 hardware acceleration).
+- **DirectX 9 / WineD3D Compatibility**: Extended `test/ucrtbase_xp.c` and `test/ucrtbase.def` with Vista condition
+  variable shims (`InitializeConditionVariable`, `SleepConditionVariableCS`, `WakeConditionVariable`, `WakeAllConditionVariable`),
+  `InitOnceExecuteOnce`, `SetThreadDescription`, and GDI32 `D3DKMT*` stubs returning `STATUS_NOT_SUPPORTED`. WineD3D
+  now cleanly loads and initializes on Windows XP x64/x86.
+- **Automated Installer**: Created `dist_full/install.bat` automating driver file copying, service registration,
+  OpenGL ICD registry setup (`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp`), and PnP hardware rescan.
+- Updated `test/update_disk_driver_user.sh` to stage `ucrtbase.dll` into `%SystemRoot%\System32` and `SysWOW64`.
+- Version bumped to 3.0.0.182 in `dist_full/nvx.inf` and `test/test_full_driver.sh`.
+
+
 
