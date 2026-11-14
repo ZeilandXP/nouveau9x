@@ -540,38 +540,62 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 
 	/* If Windows GDI chose a software/generic format (PFD_GENERIC_FORMAT) or
 	   returned a generic fallback format, search advertised ICD formats
-	   (format > 36) for a hardware-accelerated one using both
-	   wglDescribePixelFormat and DescribePixelFormat. */
+	   for a hardware-accelerated one. In Windows XP, ChoosePixelFormat with
+	   Mesa ICD returns format 63 (or indices > 36). Test format 63 directly
+	   first, then scan fmt >= 37, and finally check all formats (1..1024). */
 	if ((actualPfd.dwFlags & PFD_GENERIC_FORMAT) || PixelFormat <= 36) {
 		int foundFmt = 0;
-		log_out("[WGLGEARS] Candidate fmt=%u flags=0x%lx; scanning ICD formats for HW format\n",
+		log_out("[WGLGEARS] Candidate fmt=%u flags=0x%lx; searching for ICD hardware format\n",
 		        PixelFormat, (unsigned long)actualPfd.dwFlags);
-		for (int fmt = 37; fmt <= 1024; fmt++) {
+
+		/* Fast check: test format 63 directly (standard Mesa hardware format) */
+		{
 			PIXELFORMATDESCRIPTOR candidate;
 			memset(&candidate, 0, sizeof(candidate));
 			candidate.nSize = sizeof(candidate);
-			int cnt = 0;
-			if (wglDPF) {
-				cnt = wglDPF(hDC, fmt, sizeof(candidate), &candidate);
-			}
-			if (cnt == 0) {
-				cnt = DescribePixelFormat(hDC, fmt, sizeof(candidate), &candidate);
-			}
-			if (cnt == 0) {
-				log_out("[WGLGEARS] Formats exhausted at fmt=%d; stopping scan\n", fmt);
-				break;
-			}
-			if ((candidate.dwFlags & (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER)) ==
+			int cnt = wglDPF ? wglDPF(hDC, 63, sizeof(candidate), &candidate) : 0;
+			if (cnt == 0) cnt = DescribePixelFormat(hDC, 63, sizeof(candidate), &candidate);
+			if (cnt > 0 &&
+			    (candidate.dwFlags & (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER)) ==
 			    (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER) &&
-			    !(candidate.dwFlags & PFD_GENERIC_FORMAT) &&
-			    candidate.cColorBits == 32 && candidate.cDepthBits >= 24) {
-				foundFmt = fmt;
-				PixelFormat = fmt;
+			    !(candidate.dwFlags & PFD_GENERIC_FORMAT)) {
+				foundFmt = 63;
+				PixelFormat = 63;
 				actualPfd = candidate;
-				log_out("[WGLGEARS] Found HW format at index %d (flags=0x%lx color=%u depth=%u)\n",
-				        fmt, (unsigned long)candidate.dwFlags,
+				log_out("[WGLGEARS] Directly selected Mesa ICD format 63 (flags=0x%lx color=%u depth=%u)\n",
+				        (unsigned long)candidate.dwFlags,
 				        (unsigned)candidate.cColorBits, (unsigned)candidate.cDepthBits);
-				break;
+			}
+		}
+
+		if (!foundFmt) {
+			for (int fmt = 37; fmt <= 1024; fmt++) {
+				PIXELFORMATDESCRIPTOR candidate;
+				memset(&candidate, 0, sizeof(candidate));
+				candidate.nSize = sizeof(candidate);
+				int cnt = 0;
+				if (wglDPF) {
+					cnt = wglDPF(hDC, fmt, sizeof(candidate), &candidate);
+				}
+				if (cnt == 0) {
+					cnt = DescribePixelFormat(hDC, fmt, sizeof(candidate), &candidate);
+				}
+				if (cnt == 0) {
+					log_out("[WGLGEARS] Formats exhausted at fmt=%d; stopping scan\n", fmt);
+					break;
+				}
+				if ((candidate.dwFlags & (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER)) ==
+				    (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER) &&
+				    !(candidate.dwFlags & PFD_GENERIC_FORMAT) &&
+				    candidate.cColorBits == 32 && candidate.cDepthBits >= 24) {
+					foundFmt = fmt;
+					PixelFormat = fmt;
+					actualPfd = candidate;
+					log_out("[WGLGEARS] Found HW format at index %d (flags=0x%lx color=%u depth=%u)\n",
+					        fmt, (unsigned long)candidate.dwFlags,
+					        (unsigned)candidate.cColorBits, (unsigned)candidate.cDepthBits);
+					break;
+				}
 			}
 		}
 		if (!foundFmt) {

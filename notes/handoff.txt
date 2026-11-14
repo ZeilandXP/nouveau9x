@@ -1433,6 +1433,18 @@ Relevant files: `mesa_patches/nvx_xf86drm.c`,
   to ensure all submitted GPU commands complete prior to buffer and channel release.
 - Version bumped to 3.0.0.184 in `dist_full/nvx.inf`, `test/test_full_driver.sh`, and `notes/handoff.txt`.
 
+### Revision 3.0.0.185 — Direct3D 9 runtime graceful handling and wglgears Mesa ICD format 63 fast-path
+
+- **Direct3D 9 Runtime Graceful Handling**: In `test/test_gpu_accel.c`, updated `TestDirect3D9` to treat dynamic
+  `LoadLibraryA("d3d9.dll")` errors (e.g. error 127 due to Vista+ kernel exports in upstream WineD3D) and missing
+  `Direct3DCreate9` entry points as `d3dUnavailable = 1` (`[D3D9_RESULT] UNAVAILABLE (no Direct3D HAL)`) rather
+  than incrementing `failures++`.
+- **Wglgears Mesa ICD Format 63 Selection**: In `test/3d_tests/glxgears_main.cpp`, added direct probing of format
+  index 63 (the primary double-buffered OpenGL hardware format exposed by Mesa ICD) when GDI selects a fallback format
+  (<= 36) or `PFD_GENERIC_FORMAT`. This ensures `wglgears.exe` directly binds to the Nouveau hardware Gallium driver
+  (`GL_RENDERER = NV170`) instead of falling back to software.
+- Version bumped to 3.0.0.185 in `dist_full/nvx.inf`, `test/test_full_driver.sh`, and `notes/handoff.txt`.
+
 
 
 
