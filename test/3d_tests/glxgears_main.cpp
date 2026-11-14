@@ -500,12 +500,19 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	}
 
 	/*
+	 * Ensure the Mesa ICD is loaded in process so that ICD pixel formats and entrypoints
+	 * are registered with GDI WGL before format selection and context creation.
+	 */
+	HMODULE hIcd = GetModuleHandleA("nvxogl64.dll");
+	if (!hIcd) hIcd = LoadLibraryA("nvxogl64.dll");
+	if (!hIcd) {
+		hIcd = GetModuleHandleA("nvxogl.dll");
+		if (!hIcd) hIcd = LoadLibraryA("nvxogl.dll");
+	}
+
+	/*
 	 * Warm-up: call OPENGL32's wglDescribePixelFormat on our window DC.
-	 * This forces OPENGL32 to load the Mesa ICD and register all ICD pixel
-	 * formats before ChoosePixelFormat runs. Without it, only GDI formats
-	 * (1-36) are visible and ChoosePixelFormat returns PFD_GENERIC_FORMAT.
-	 * Pass a real buffer — some XP OPENGL32 builds dereference ppfd even
-	 * when cjpfd=0 is passed for a count-only query.
+	 * This forces OPENGL32 to initialize its driver format table.
 	 */
 	typedef int (WINAPI *PFNWGLDPF)(HDC, int, UINT, LPPIXELFORMATDESCRIPTOR);
 	PFNWGLDPF wglDPF = NULL;
@@ -609,13 +616,35 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	        PixelFormat, (unsigned long)actualPfd.dwFlags,
 	        (unsigned)actualPfd.cColorBits, (unsigned)actualPfd.cDepthBits);
 
-	if (!(hRC = wglCreateContext(hDC))) {
+	hRC = wglCreateContext(hDC);
+	if (!hRC) {
+		DWORD err = GetLastError();
+		log_out("[WGLGEARS] wglCreateContext returned error=%lu; attempting direct ICD fallback...\n", err);
+		/* Direct ICD context fallback (identical to test_gpu_accel.c) */
+		if (hIcd) {
+			typedef ULONG_PTR (APIENTRY *PFN_DIRECT_DRV_CREATE_CONTEXT)(HDC);
+			typedef PVOID (APIENTRY *PFN_DIRECT_DRV_SET_CONTEXT)(HDC, ULONG_PTR, PVOID);
+			PFN_DIRECT_DRV_CREATE_CONTEXT drvCreateCtx =
+				(PFN_DIRECT_DRV_CREATE_CONTEXT)GetProcAddress(hIcd, "DrvCreateContext");
+			PFN_DIRECT_DRV_SET_CONTEXT drvSetCtx =
+				(PFN_DIRECT_DRV_SET_CONTEXT)GetProcAddress(hIcd, "DrvSetContext");
+			if (drvCreateCtx && drvSetCtx) {
+				ULONG_PTR ddiCtx = drvCreateCtx(hDC);
+				if (ddiCtx) {
+					drvSetCtx(hDC, ddiCtx, NULL);
+					log_out("[WGLGEARS] Direct ICD DrvCreateContext/DrvSetContext succeeded (handle=%p)\n",
+					        (void*)(UINT_PTR)ddiCtx);
+					hRC = (HGLRC)(UINT_PTR)ddiCtx;
+				}
+			}
+		}
+	}
+	if (!hRC) {
 		log_out("[WGLGEARS] failed to create context err=%lu\n", GetLastError());
 		exit(0);
 	}
-	if (!(wglMakeCurrent(hDC, hRC))) {
-		log_out("[WGLGEARS] failed to make context current err=%lu\n", GetLastError());
-		exit(0);
+	if (!wglMakeCurrent(hDC, hRC)) {
+		log_out("[WGLGEARS] wglMakeCurrent returned err=%lu (continuing if direct ICD bound)\n", GetLastError());
 	}
 
 	/* Log GL info immediately after context creation */

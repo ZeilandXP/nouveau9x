@@ -164,6 +164,12 @@ if [ -f "$NVX_PACKAGE/nvxgdi32.dl" ]; then
     fi
 fi
 
+if [ -f "$NVX_PACKAGE/libwine.dll" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel"
+    cp -v "$NVX_PACKAGE/libwine.dll" "$NVX_MOUNT/test_accel/libwine.dll"
+    cp -v "$NVX_PACKAGE/libwine.dll" "$NVX_SYSTEM32/libwine.dll"
+fi
+
 if [ -f "$NVX_PACKAGE/d3d9.dll" ]; then
     mkdir -p "$NVX_MOUNT/test_accel"
     cp -v "$NVX_PACKAGE/d3d9.dll" "$NVX_MOUNT/test_accel/d3d9.dll"
@@ -184,8 +190,14 @@ elif [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll ]; then
     cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll "$NVX_SYSTEM32/wined3d.dll"
 fi
 
-# Note: 32-bit WineD3D on XP x64 SysWOW64 requires ucrtbase32 math exports not yet available in the minimal shim.
-# Only 64-bit WineD3D is deployed until ucrtbase32 math symbols are extended.
+# Deploy 32-bit WineD3D for SysWOW64 if available
+if [ -d "$NVX_ROOT/test/wined3d_xp/x86" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel/x86"
+    cp -v "$NVX_ROOT/test/wined3d_xp/x86/"*.dll "$NVX_MOUNT/test_accel/x86/"
+    if [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ]; then
+        cp -v "$NVX_ROOT/test/wined3d_xp/x86/"*.dll "$NVX_MOUNT/WINDOWS/SysWOW64/"
+    fi
+fi
 
 cat << 'EOF' > "$NVX_MOUNT/test_accel/run_test.bat"
 @echo off

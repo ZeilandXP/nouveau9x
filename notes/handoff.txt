@@ -1,8 +1,8 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 14, 2026 after version `v3.0.0.187`.
+Updated November 14, 2026 after version `v3.0.0.188`.
 
-## Current status (v3.0.0.187)
+## Current status (v3.0.0.188)
 
 - Fixed `wined3d.dll` build pipeline in `test/test_full_driver.sh` to preserve the `nvxgdi.dl` import patch so `d3dkmtcloseadapter` resolves to `dist_full/nvxgdi.dl` instead of failing against XP's native `gdi32.dll`.
 - Fixed `wglgears` format selection: when `ChoosePixelFormat` returns an accelerated driver format (e.g. format 1 with `flags=0x425`), avoid overriding it with Mesa format 63 so that GDI WGL context creation succeeds without returning error 183.
