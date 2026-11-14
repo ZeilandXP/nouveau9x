@@ -150,17 +150,40 @@ if [ -f "$NVX_ROOT/test/ucrtbase32.dll" ]; then
     cp -v "$NVX_ROOT/test/ucrtbase32.dll" "$NVX_MOUNT/test_accel/x86/ucrtbase.dll"
 fi
 
-# Deploy Wine Direct3D 9 -> OpenGL translation runtime
-if [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll ]; then
+# Deploy Wine Direct3D 9 -> OpenGL translation runtime and nvxgdi forwarding proxy
+if [ -f "$NVX_PACKAGE/nvxgdi.dl" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel"
+    cp -v "$NVX_PACKAGE/nvxgdi.dl" "$NVX_MOUNT/test_accel/nvxgdi.dl"
+    cp -v "$NVX_PACKAGE/nvxgdi.dl" "$NVX_SYSTEM32/nvxgdi.dl"
+fi
+if [ -f "$NVX_PACKAGE/nvxgdi32.dl" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel/x86"
+    cp -v "$NVX_PACKAGE/nvxgdi32.dl" "$NVX_MOUNT/test_accel/x86/nvxgdi.dl"
+    if [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ]; then
+        cp -v "$NVX_PACKAGE/nvxgdi32.dl" "$NVX_MOUNT/WINDOWS/SysWOW64/nvxgdi.dl"
+    fi
+fi
+
+if [ -f "$NVX_PACKAGE/d3d9.dll" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel"
+    cp -v "$NVX_PACKAGE/d3d9.dll" "$NVX_MOUNT/test_accel/d3d9.dll"
+    cp -v "$NVX_PACKAGE/d3d9.dll" "$NVX_SYSTEM32/d3d9.dll"
+elif [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll ]; then
     mkdir -p "$NVX_MOUNT/test_accel"
     cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll "$NVX_MOUNT/test_accel/d3d9.dll"
     cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll "$NVX_SYSTEM32/d3d9.dll"
 fi
-if [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll ]; then
+
+if [ -f "$NVX_PACKAGE/wined3d.dll" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel"
+    cp -v "$NVX_PACKAGE/wined3d.dll" "$NVX_MOUNT/test_accel/wined3d.dll"
+    cp -v "$NVX_PACKAGE/wined3d.dll" "$NVX_SYSTEM32/wined3d.dll"
+elif [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll ]; then
     mkdir -p "$NVX_MOUNT/test_accel"
     cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll "$NVX_MOUNT/test_accel/wined3d.dll"
     cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll "$NVX_SYSTEM32/wined3d.dll"
 fi
+
 if [ -f /usr/lib/i386-linux-gnu/wine/i386-windows/d3d9.dll ]; then
     mkdir -p "$NVX_MOUNT/test_accel/x86"
     cp -v /usr/lib/i386-linux-gnu/wine/i386-windows/d3d9.dll "$NVX_MOUNT/test_accel/x86/d3d9.dll"
@@ -168,7 +191,14 @@ if [ -f /usr/lib/i386-linux-gnu/wine/i386-windows/d3d9.dll ]; then
         cp -v /usr/lib/i386-linux-gnu/wine/i386-windows/d3d9.dll "$NVX_MOUNT/WINDOWS/SysWOW64/d3d9.dll"
     fi
 fi
-if [ -f /usr/lib/i386-linux-gnu/wine/i386-windows/wined3d.dll ]; then
+
+if [ -f "$NVX_PACKAGE/wined3d32.dll" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel/x86"
+    cp -v "$NVX_PACKAGE/wined3d32.dll" "$NVX_MOUNT/test_accel/x86/wined3d.dll"
+    if [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ]; then
+        cp -v "$NVX_PACKAGE/wined3d32.dll" "$NVX_MOUNT/WINDOWS/SysWOW64/wined3d.dll"
+    fi
+elif [ -f /usr/lib/i386-linux-gnu/wine/i386-windows/wined3d.dll ]; then
     mkdir -p "$NVX_MOUNT/test_accel/x86"
     cp -v /usr/lib/i386-linux-gnu/wine/i386-windows/wined3d.dll "$NVX_MOUNT/test_accel/x86/wined3d.dll"
     if [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ]; then

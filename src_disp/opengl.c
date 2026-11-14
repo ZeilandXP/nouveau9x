@@ -149,6 +149,8 @@ DrvEscape(SURFOBJ *pso,ULONG iEsc,ULONG cjIn,PVOID pvIn,
     return returned?returned:1;
 }
 
+#define NVX_DRIVER_PIXEL_FORMATS 64
+
 /*
  * DrvDescribePixelFormat:
  * Enumerates supported OpenGL pixel formats for the GDI/OpenGL ICD subsystem.
@@ -165,10 +167,10 @@ DrvDescribePixelFormat(
 
     /* Query total number of supported formats */
     if (!ppfd || cjDesc == 0) {
-        return 2;
+        return NVX_DRIVER_PIXEL_FORMATS;
     }
 
-    if (iPixelFormat < 1 || iPixelFormat > 2) {
+    if (iPixelFormat < 1 || iPixelFormat > NVX_DRIVER_PIXEL_FORMATS) {
         return 0;
     }
 
@@ -195,7 +197,7 @@ DrvDescribePixelFormat(
     ppfd->cAuxBuffers = 0;
     ppfd->iLayerType = PFD_MAIN_PLANE;
 
-    if (iPixelFormat == 1) {
+    if (iPixelFormat % 2 == 1) {
         /* ICD-backed double-buffered format; presentation copies the back
            surface into the scanout surface. */
         ppfd->dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL |
@@ -205,7 +207,7 @@ DrvDescribePixelFormat(
                         PFD_SUPPORT_GDI;
     }
 
-    return 2;
+    return NVX_DRIVER_PIXEL_FORMATS;
 }
 
 /*
@@ -220,7 +222,7 @@ DrvSetPixelFormat(
 {
     (void)pso;
     (void)hwnd;
-    if (iPixelFormat < 1 || iPixelFormat > 2)
+    if (iPixelFormat < 1 || iPixelFormat > NVX_DRIVER_PIXEL_FORMATS)
         return FALSE;
     return TRUE;
 }

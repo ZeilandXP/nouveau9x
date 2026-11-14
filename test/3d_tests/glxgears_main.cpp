@@ -688,6 +688,7 @@ main(int argc, char *argv[])
 {
    int            i;
    Bool	printInfo = False;
+   SetEnvironmentVariableA("GALLIUM_DRIVER", "nouveau");
    FILE *fpReset = fopen("C:\\wglgears.log", "w");
    if (fpReset) fclose(fpReset);
 

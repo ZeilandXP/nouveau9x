@@ -1,0 +1,27 @@
+LIBRARY nvxgdi.dll
+EXPORTS
+    BitBlt = gdi32.BitBlt
+    ChoosePixelFormat = gdi32.ChoosePixelFormat
+    CreateBitmap = gdi32.CreateBitmap
+    CreateCompatibleDC = gdi32.CreateCompatibleDC
+    CreateDCW = gdi32.CreateDCW
+    DeleteDC = gdi32.DeleteDC
+    DeleteObject = gdi32.DeleteObject
+    DescribePixelFormat = gdi32.DescribePixelFormat
+    GetDeviceGammaRamp = gdi32.GetDeviceGammaRamp
+    GetObjectA = gdi32.GetObjectA
+    GetPixelFormat = gdi32.GetPixelFormat
+    SelectObject = gdi32.SelectObject
+    SetDIBColorTable = gdi32.SetDIBColorTable
+    SetDeviceGammaRamp = gdi32.SetDeviceGammaRamp
+    SetPixelFormat = gdi32.SetPixelFormat
+    StretchBlt = gdi32.StretchBlt
+    D3DKMTCloseAdapter
+    D3DKMTCreateDCFromMemory
+    D3DKMTCreateDevice
+    D3DKMTDestroyDCFromMemory
+    D3DKMTDestroyDevice
+    D3DKMTOpenAdapterFromGdiDisplayName
+    D3DKMTOpenAdapterFromLuid
+    D3DKMTQueryVideoMemoryInfo
+    D3DKMTSetVidPnSourceOwner
