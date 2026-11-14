@@ -3517,6 +3517,13 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
                                      0x30090),dev->GspGraphicsSubmitToken);
     VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
                               dev->GspGraphicsRunlistBase+0x90),2U);
+    /* Also update PBDMA 0 direct GP_PUT register if BAR0 covers PBDMA registers */
+    if(dev->Bar0Length>=0x40004) {
+        VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
+                                     0x40000+NVX_PPBDMA_GP_PUT_REL),dev->GspGraphicsGPPut);
+        (void)VideoPortReadRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
+                                         0x40000+NVX_PPBDMA_GP_PUT_REL));
+    }
     for(wait=0;wait<50000U;wait++) {
         if(fence[0]==(ULONG)fenceValue) {
             __sync_synchronize();
@@ -3555,6 +3562,12 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
                                          0x30090),dev->GspGraphicsSubmitToken);
         VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
                                   dev->GspGraphicsRunlistBase+0x90),2U);
+        if(dev->Bar0Length>=0x40004) {
+            VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
+                                         0x40000+NVX_PPBDMA_GP_PUT_REL),dev->GspGraphicsGPPut);
+            (void)VideoPortReadRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
+                                             0x40000+NVX_PPBDMA_GP_PUT_REL));
+        }
         for(wait=0;wait<50000U;wait++) {
             if(fence[0]==(ULONG)fenceValue) {
                 __sync_synchronize();

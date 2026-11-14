@@ -1967,11 +1967,17 @@ BOOLEAN NTAPI HwVidStartIO(
     ULONG status = NO_ERROR;
 
     /* Serial polling per row can dominate desktop rendering. Acceleration
-       paths already report sampled progress and all submission failures. */
+       paths already report sampled progress and all submission failures.
+       Suppress high-frequency batch, upload, download, and wait fence IOCTLs
+       so the virtual serial log is not backpressured during animation. */
     if(RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_UPLOAD &&
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_COPY &&
        RequestPacket->IoControlCode!=IOCTL_NVX_ACCEL_FILL &&
-       RequestPacket->IoControlCode!=IOCTL_NVX_GET_LOG) {
+       RequestPacket->IoControlCode!=IOCTL_NVX_GET_LOG &&
+       RequestPacket->IoControlCode!=IOCTL_NVX_3D_SUBMIT_BATCH &&
+       RequestPacket->IoControlCode!=IOCTL_NVX_3D_UPLOAD_BUFFER &&
+       RequestPacket->IoControlCode!=IOCTL_NVX_3D_DOWNLOAD_BUFFER &&
+       RequestPacket->IoControlCode!=IOCTL_NVX_3D_WAIT_FENCE) {
         LogStr("NVX: HwVidStartIO IoControlCode: ");
         LogHex(RequestPacket->IoControlCode);
         LogStr("\n");

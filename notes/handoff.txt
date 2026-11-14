@@ -1,13 +1,11 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 14, 2026 after version `v3.0.0.190`.
+Updated November 14, 2026 after version `v3.0.0.191`.
 
-## Current status (v3.0.0.190)
+## Current status (v3.0.0.191)
 
-- Fixed display driver pixel format descriptor flags in `src_disp/opengl.c`: Removed non-standard `PFD_SWAP_COPY`/`PFD_SUPPORT_GDI` flags so all advertised formats are standard hardware double-buffered ICD formats, enabling generic GDI `ChoosePixelFormat` to bind hardware acceleration automatically.
-- Silenced noisy `0x200`/`0x201` debug logging during pixel format queries.
-- Extended NVC0 batch fence wait timeout in `src_driver/nvx_gsp.c` from 1s to 5s.
-- Protected graphics channel from premature wedging: only latch `GspGraphicsChannelFaulted = TRUE` on verified PGRAPH trap/interrupt hardware error or MMU fault.
+- Suppressed high-frequency batch, upload, download, and wait fence IOCTL log spew in `src_driver/nvxmp.c:HwVidStartIO` to prevent serial backpressure during continuous multi-frame rendering.
+- Added direct PBDMA GP_PUT update and posted-write flush in `src_driver/nvx_gsp.c:NvxGspSubmitNvc0Batch`.
 - Maintained clean `mesa/` submodule at commit `cc2dcf9abdc6`.
 
 The latest completed VFIO run `.149` booted and shut down normally. The
