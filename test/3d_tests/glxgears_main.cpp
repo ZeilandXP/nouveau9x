@@ -538,15 +538,12 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	        PixelFormat, (unsigned long)actualPfd.dwFlags,
 	        (actualPfd.dwFlags & PFD_GENERIC_FORMAT) ? "YES" : "NO");
 
-	/* If Windows GDI chose a software/generic format (PFD_GENERIC_FORMAT) or
-	   returned a generic fallback format, search advertised ICD formats
-	   for a hardware-accelerated one. In Windows XP, ChoosePixelFormat with
-	   Mesa ICD returns format 63 (or indices > 36). Test format 63 directly
-	   first, then scan fmt >= 37, and finally check all formats (1..1024). */
-	if ((actualPfd.dwFlags & PFD_GENERIC_FORMAT) || PixelFormat <= 36) {
+	/* If Windows GDI chose a software/generic format (PFD_GENERIC_FORMAT),
+	   search advertised ICD formats for a hardware-accelerated one.
+	   Do NOT override PixelFormat if ChoosePixelFormat already picked a driver format! */
+	if (actualPfd.dwFlags & PFD_GENERIC_FORMAT) {
 		int foundFmt = 0;
-		log_out("[WGLGEARS] Candidate fmt=%u flags=0x%lx; searching for ICD hardware format\n",
-		        PixelFormat, (unsigned long)actualPfd.dwFlags);
+		log_out("[WGLGEARS] Generic format %u selected; searching for ICD hardware format\n", PixelFormat);
 
 		/* Fast check: test format 63 directly (standard Mesa hardware format) */
 		{

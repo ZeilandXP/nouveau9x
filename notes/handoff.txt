@@ -1,19 +1,12 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 14, 2026 after version `v3.0.0.186`.
+Updated November 14, 2026 after version `v3.0.0.187`.
 
-## Current status (v3.0.0.186)
+## Current status (v3.0.0.187)
 
-- Extended display driver `src_disp/opengl.c` pixel format reporting to expose 64
-  driver formats (Option 2) in `DrvDescribePixelFormat` and allow formats 1..64
-  in `DrvSetPixelFormat`, enabling standard GDI and ICD format negotiation.
-- Created `nvxgdi.dl` (x64) and `nvxgdi32.dl` (x86) forwarding proxy DLLs to provide
-  the 9 `D3DKMT*` functions required by upstream WineD3D while forwarding all standard
-  GDI calls directly to Windows XP's native `gdi32.dll`.
-- Replaced `gdi32.dll` with `nvxgdi.dl` in `dist_full/wined3d.dll` and `dist_full/wined3d32.dll`.
-- Updated `dist_full/install.bat` and `test/update_disk_driver_user.sh` to stage and
-  deploy `nvxgdi.dl` alongside WineD3D and Mesa binaries.
-- Configured `wglgears` to set `GALLIUM_DRIVER=nouveau` programmatically at startup.
+- Fixed `wined3d.dll` build pipeline in `test/test_full_driver.sh` to preserve the `nvxgdi.dl` import patch so `d3dkmtcloseadapter` resolves to `dist_full/nvxgdi.dl` instead of failing against XP's native `gdi32.dll`.
+- Fixed `wglgears` format selection: when `ChoosePixelFormat` returns an accelerated driver format (e.g. format 1 with `flags=0x425`), avoid overriding it with Mesa format 63 so that GDI WGL context creation succeeds without returning error 183.
+- Maintained clean `mesa/` submodule at commit `cc2dcf9abdc6`.
 
 The latest completed VFIO run `.149` booted and shut down normally. The
 explicit GLSL client-array triangle passes on the RTX 3070 with 1,352 green

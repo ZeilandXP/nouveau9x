@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.186"
+NVX_TEST_VERSION="3.0.0.187"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
 NVX_TEST_FLAGS=()
@@ -77,7 +77,13 @@ if [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll ]; then
     cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll "$NVX_ROOT/dist_full/d3d9.dll"
 fi
 if [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll ]; then
-    cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll "$NVX_ROOT/dist_full/wined3d.dll"
+    python3 -c "
+with open('/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll', 'rb') as f:
+    orig = f.read()
+patched = orig.replace(b'gdi32.dll\0', b'nvxgdi.dl\0')
+with open('$NVX_ROOT/dist_full/wined3d.dll', 'wb') as f:
+    f.write(patched)
+"
 fi
 if [ "${NVX_GR_CHANNEL_PROBE:-0}" = "1" ]; then
     NVX_DRIVER_BUILD_TARGET=full-gr-probe
