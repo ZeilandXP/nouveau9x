@@ -1416,6 +1416,24 @@ Relevant files: `mesa_patches/nvx_xf86drm.c`,
 - Rebuilt `test/3d_tests/wglgears.exe` and `wglgears32.exe`.
 - Version bumped to 3.0.0.183 in `dist_full/nvx.inf` and `test/test_full_driver.sh`.
 
+### Revision 3.0.0.184 — WineD3D Vista/XP shim integration, client session synchronization, and ICD format scan
+
+- **WineD3D Import Audit Resolution**: Updated `test/audit_xp_imports.py` to recognize that Vista+ Kernel32 and GDI32
+  APIs (`InitializeConditionVariable`, `SleepConditionVariableCS`, `WakeConditionVariable`, `WakeAllConditionVariable`,
+  `InitOnceExecuteOnce`, `SetThreadDescription`, and `D3DKMT*`) required by WineD3D are provided at runtime in
+  `ucrtbase.dll` by the XP compatibility shim.
+- **Wine Direct3D 9 Deployment**: Staged Wine 64-bit and 32-bit `d3d9.dll` and `wined3d.dll` into `dist_full/`,
+  `dist_full/install.bat`, and `test/update_disk_driver_user.sh`, targeting `%SystemRoot%\System32`, `SysWOW64`, and
+  `C:\test_accel\`.
+- **NVX 3D Client Session in wglgears**: Added `NvxOpen3dClientSession` and `NvxClose3dClientSession` via `nvx_3d_abi.h`
+  escapes to `test/3d_tests/glxgears_main.cpp` so that the miniport leases the GA104 hardware 3D channel to Mesa.
+- **ICD Pixel Format Discovery Fix**: Fixed format scanning in `wglgears` to scan genuine ICD formats (`fmt >= 37`)
+  instead of stopping at format 1 (GDI fallback).
+- **Client Teardown Synchronization**: Added `glFinish()` prior to `NvxTestCloseClient` in `test/test_gpu_accel.c`
+  to ensure all submitted GPU commands complete prior to buffer and channel release.
+- Version bumped to 3.0.0.184 in `dist_full/nvx.inf`, `test/test_full_driver.sh`, and `notes/handoff.txt`.
+
+
 
 
 

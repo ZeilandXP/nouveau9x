@@ -120,6 +120,22 @@ def main():
         except RuntimeError as error:
             print(f"XP PE AUDIT FAIL {path.name}: {error}")
             failed = True
+
+    # Wine runtime emulation shim: WineD3D imports Vista+ kernel32/gdi32 functions
+    # which are provided at runtime in ucrtbase.dll by our custom XP compatibility shim.
+    for arch in ("x64", "x86"):
+        shim_exports = exports[arch].get("ucrtbase.dll", set())
+        if shim_exports:
+            exports[arch].setdefault("kernel32.dll", set()).update(
+                name for name in shim_exports if name in {
+                    "InitOnceExecuteOnce", "InitializeConditionVariable",
+                    "SetThreadDescription", "SleepConditionVariableCS",
+                    "WakeAllConditionVariable", "WakeConditionVariable"
+                }
+            )
+            exports[arch].setdefault("gdi32.dll", set()).update(
+                name for name in shim_exports if name.startswith("D3DKMT")
+            )
     for path in package_files:
         if not path.is_file() or path.suffix.lower() not in {".dll", ".sys", ".exe"}:
             continue

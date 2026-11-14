@@ -39,23 +39,28 @@ for %%F in ("%DRV_DIR%\nvxmp.sys" "%DRV_DIR%\gsp_ga104.bin" "%SYS32%\nvxdisp.dll
 echo [1/5] Existing files backed up to %BACKUP_DIR%
 
 :: 2. Copy kernel miniport, GSP firmware, display DLL, Mesa, and OpenGL ICD
-echo [2/5] Copying driver and OpenGL binaries...
+echo [2/5] Copying driver, OpenGL, and WineD3D binaries...
 copy /y "%SRC_DIR%\nvxmp.sys"     "%DRV_DIR%\nvxmp.sys"     >nul || goto :copy_fail
 copy /y "%SRC_DIR%\gsp_ga104.bin" "%DRV_DIR%\gsp_ga104.bin" >nul || goto :copy_fail
 copy /y "%SRC_DIR%\nvxdisp.dll"   "%SYS32%\nvxdisp.dll"     >nul || goto :copy_fail
 copy /y "%SRC_DIR%\nvxmesa.dll"   "%SYS32%\nvxmesa.dll"     >nul || goto :copy_fail
 copy /y "%SRC_DIR%\nvxogl64.dll"  "%SYS32%\nvxogl64.dll"    >nul || goto :copy_fail
 copy /y "%SRC_DIR%\nvx.inf"       "%SystemRoot%\inf\nvx.inf" >nul || goto :copy_fail
+if exist "%SRC_DIR%\ucrtbase.dll" copy /y "%SRC_DIR%\ucrtbase.dll" "%SYS32%\ucrtbase.dll" >nul
+if exist "%SRC_DIR%\d3d9.dll"     copy /y "%SRC_DIR%\d3d9.dll"     "%SYS32%\d3d9.dll"     >nul
+if exist "%SRC_DIR%\wined3d.dll"  copy /y "%SRC_DIR%\wined3d.dll"  "%SYS32%\wined3d.dll"  >nul
 
 :: Stage a clean copy in C:\nvx_driver for Device Manager / PnP Wizard
 if not exist "%SystemDrive%\nvx_driver" mkdir "%SystemDrive%\nvx_driver"
 copy /y "%SRC_DIR%\*.*" "%SystemDrive%\nvx_driver\" >nul
 
 :: Stage test suite in C:\test_accel if present
-if exist "%SRC_DIR%\test_gpu_accel.exe" (
-    if not exist "%SystemDrive%\test_accel" mkdir "%SystemDrive%\test_accel"
-    copy /y "%SRC_DIR%\test_gpu_accel.exe" "%SystemDrive%\test_accel\test_gpu_accel.exe" >nul
-)
+if not exist "%SystemDrive%\test_accel" mkdir "%SystemDrive%\test_accel"
+if exist "%SRC_DIR%\test_gpu_accel.exe" copy /y "%SRC_DIR%\test_gpu_accel.exe" "%SystemDrive%\test_accel\test_gpu_accel.exe" >nul
+if exist "%SRC_DIR%\wglgears.exe"       copy /y "%SRC_DIR%\wglgears.exe"       "%SystemDrive%\test_accel\wglgears.exe"       >nul
+if exist "%SRC_DIR%\ucrtbase.dll"       copy /y "%SRC_DIR%\ucrtbase.dll"       "%SystemDrive%\test_accel\ucrtbase.dll"       >nul
+if exist "%SRC_DIR%\d3d9.dll"           copy /y "%SRC_DIR%\d3d9.dll"           "%SystemDrive%\test_accel\d3d9.dll"           >nul
+if exist "%SRC_DIR%\wined3d.dll"        copy /y "%SRC_DIR%\wined3d.dll"        "%SystemDrive%\test_accel\wined3d.dll"        >nul
 
 :: 3. Register nvxmp kernel service & display settings in Registry
 echo [3/5] Registering nvxmp service and OpenGL ICD in Registry...

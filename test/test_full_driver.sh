@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.183"
+NVX_TEST_VERSION="3.0.0.184"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
 NVX_TEST_FLAGS=()
@@ -66,11 +66,19 @@ i686-w64-mingw32-gcc -O2 -Wall -Wextra -static-libgcc \
     -lopengl32 -lgdi32 -luser32 \
     -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 \
     -o "$NVX_ROOT/test/test_gpu_accel32.exe"
-x86_64-w64-mingw32-gcc -x c -O2 -static-libgcc "$NVX_ROOT/test/3d_tests/glxgears_main.cpp" -lopengl32 -lgdi32 -luser32 -o "$NVX_ROOT/test/3d_tests/wglgears.exe"
-i686-w64-mingw32-gcc -x c -O2 -static-libgcc -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 "$NVX_ROOT/test/3d_tests/glxgears_main.cpp" -lopengl32 -lgdi32 -luser32 -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 -o "$NVX_ROOT/test/3d_tests/wglgears32.exe"
+x86_64-w64-mingw32-gcc -x c -O2 -static-libgcc -I"$NVX_ROOT/src_driver" "$NVX_ROOT/test/3d_tests/glxgears_main.cpp" -lopengl32 -lgdi32 -luser32 -o "$NVX_ROOT/test/3d_tests/wglgears.exe"
+i686-w64-mingw32-gcc -x c -O2 -static-libgcc -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 -I"$NVX_ROOT/src_driver" "$NVX_ROOT/test/3d_tests/glxgears_main.cpp" -lopengl32 -lgdi32 -luser32 -Wl,--major-subsystem-version,5 -Wl,--minor-subsystem-version,2 -o "$NVX_ROOT/test/3d_tests/wglgears32.exe"
 x86_64-w64-mingw32-gcc -O2 -shared -static-libgcc "$NVX_ROOT/test/ucrtbase_xp.c" "$NVX_ROOT/test/ucrtbase.def" -o "$NVX_ROOT/test/ucrtbase.dll" -lm
 i686-w64-mingw32-gcc -O2 -shared -static-libgcc "$NVX_ROOT/test/ucrtbase_xp.c" "$NVX_ROOT/test/ucrtbase.def" -o "$NVX_ROOT/test/ucrtbase32.dll" -lm
 cp "$NVX_ROOT/test/test_gpu_accel.exe" "$NVX_ROOT/dist_full/test_gpu_accel.exe"
+cp "$NVX_ROOT/test/3d_tests/wglgears.exe" "$NVX_ROOT/dist_full/wglgears.exe"
+cp "$NVX_ROOT/test/ucrtbase.dll" "$NVX_ROOT/dist_full/ucrtbase.dll"
+if [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll ]; then
+    cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll "$NVX_ROOT/dist_full/d3d9.dll"
+fi
+if [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll ]; then
+    cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll "$NVX_ROOT/dist_full/wined3d.dll"
+fi
 if [ "${NVX_GR_CHANNEL_PROBE:-0}" = "1" ]; then
     NVX_DRIVER_BUILD_TARGET=full-gr-probe
     NVX_DRIVER_BUILD_ARGS=("NVX_ENABLE_GR_CHANNEL_PROBE=1")

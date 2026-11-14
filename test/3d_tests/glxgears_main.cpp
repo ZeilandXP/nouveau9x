@@ -37,6 +37,8 @@
 #include <GL/gl.h>
 // Removed out-dated un-required WGL header file 
 
+#include "nvx_3d_abi.h"
+
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -70,6 +72,39 @@ static HGLRC hRC;
 static HWND hWnd;
 static HINSTANCE hInst;
 static RECT winrect;
+static uint64_t g_nvxClientToken = 0;
+
+static void log_out(const char *fmt, ...);
+
+static void NvxOpen3dClientSession(HDC dc) {
+	NVX_3D_CLIENT_SESSION session;
+	memset(&session, 0, sizeof(session));
+	session.Size = sizeof(session);
+	session.Version = NVX_3D_ABI_VERSION;
+	session.Operation = NVX_3D_CLIENT_OPEN;
+	if (ExtEscape(dc, NVX_ESCAPE_3D_CLIENT_OPEN, sizeof(session),
+	              (LPCSTR)&session, sizeof(session), (LPSTR)&session) > 0) {
+		if (Nvx3dValidateClientSession(&session, NVX_3D_CLIENT_OPEN) && session.ClientToken) {
+			g_nvxClientToken = session.ClientToken;
+			log_out("[WGLGEARS] NVX 3D client session established: token=0x%llx\n",
+			        (unsigned long long)g_nvxClientToken);
+		}
+	}
+}
+
+static void NvxClose3dClientSession(HDC dc) {
+	if (g_nvxClientToken) {
+		NVX_3D_CLIENT_SESSION session;
+		memset(&session, 0, sizeof(session));
+		session.Size = sizeof(session);
+		session.Version = NVX_3D_ABI_VERSION;
+		session.Operation = NVX_3D_CLIENT_CLOSE;
+		session.ClientToken = g_nvxClientToken;
+		ExtEscape(dc, NVX_ESCAPE_3D_CLIENT_CLOSE, sizeof(session),
+		          (LPCSTR)&session, 0, NULL);
+		g_nvxClientToken = 0;
+	}
+}
 
 static const char *ProgramName;      /* program name (from argv[0]) */
 static Bool        verbose = False;  /* verbose output what the program is doing */
@@ -438,6 +473,12 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	}
 
 	/*
+	 * Open NVX 3D client session so the display driver leases the GA104 hardware
+	 * 3D channel to Mesa's winsys / DRM layer instead of falling back to softpipe.
+	 */
+	NvxOpen3dClientSession(hDC);
+
+	/*
 	 * Query the display driver's OPENGL_GETINFO escape to warm up OPENGL32's
 	 * ICD binding cache and verify the display driver name.
 	 */
@@ -498,14 +539,14 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	        (actualPfd.dwFlags & PFD_GENERIC_FORMAT) ? "YES" : "NO");
 
 	/* If Windows GDI chose a software/generic format (PFD_GENERIC_FORMAT) or
-	   returned a generic fallback format, search ALL advertised formats
-	   (including ICD formats) for a hardware-accelerated one using both
+	   returned a generic fallback format, search advertised ICD formats
+	   (format > 36) for a hardware-accelerated one using both
 	   wglDescribePixelFormat and DescribePixelFormat. */
 	if ((actualPfd.dwFlags & PFD_GENERIC_FORMAT) || PixelFormat <= 36) {
 		int foundFmt = 0;
-		log_out("[WGLGEARS] Candidate fmt=%u flags=0x%lx; scanning for HW format\n",
+		log_out("[WGLGEARS] Candidate fmt=%u flags=0x%lx; scanning ICD formats for HW format\n",
 		        PixelFormat, (unsigned long)actualPfd.dwFlags);
-		for (int fmt = 1; fmt <= 1024; fmt++) {
+		for (int fmt = 37; fmt <= 1024; fmt++) {
 			PIXELFORMATDESCRIPTOR candidate;
 			memset(&candidate, 0, sizeof(candidate));
 			candidate.nSize = sizeof(candidate);
@@ -588,10 +629,10 @@ static void event_loop() {
 		draw();
         if (!SwapBuffers(hDC)) {
             log_out("[WGLGEARS] FAIL: SwapBuffers error=%lu\n", GetLastError());
+            NvxClose3dClientSession(hDC);
             ExitProcess(1);
         }
 		GdiFlush();
-		Sleep(0);
 
 		/* calc framerate */
 		t = current_time();
@@ -612,6 +653,7 @@ static void event_loop() {
 				        total_frames, s, (GLfloat)total_frames / s);
 			}
 			log_out("[WGLGEARS] Reached auto-exit duration of %d seconds. Exiting.\n", g_autoExitSeconds);
+			NvxClose3dClientSession(hDC);
 			ExitProcess(0);
 		}
 	}
@@ -682,6 +724,7 @@ main(int argc, char *argv[])
 	wglMakeCurrent (NULL, NULL);
 	wglDeleteContext (hRC);
 	ShowWindow(hWnd, SW_HIDE);
+	NvxClose3dClientSession(hDC);
 	ReleaseDC (hWnd, hDC);
 	DestroyWindow(hWnd);
 

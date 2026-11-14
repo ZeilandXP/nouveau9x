@@ -4542,6 +4542,8 @@ int main(int argc, char **argv)
         LogMsg("[D3D9_RESULT] %s\n", failures != before ? "FAIL" : d3dUnavailable ? "UNAVAILABLE (no Direct3D HAL)" : "RENDERED (see device type)");
     }
 
+    /* Wait for all outstanding GPU work to finish before tearing down client session */
+    glFinish();
     NvxTestCloseClient(hdc);
 
     ReleaseDC(hwnd, hdc);
