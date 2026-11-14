@@ -87,7 +87,7 @@ def main():
     for arch, arch_dirs in directories.items():
         for directory in arch_dirs:
             for path in directory.iterdir():
-                if path.suffix.lower() not in {".dll", ".sys", ".exe"}:
+                if path.suffix.lower() not in {".dll", ".sys", ".exe", ".dl"}:
                     continue
                 try:
                     names = exported_names(tools[arch], path)
@@ -111,7 +111,7 @@ def main():
     # Mesa WGL frontend imports nvxogl64.dll). Include package exports in the
     # same resolution set as the XP system DLLs.
     for path in package_files:
-        if not path.is_file() or path.suffix.lower() not in {".dll", ".sys", ".exe"}:
+        if not path.is_file() or path.suffix.lower() not in {".dll", ".sys", ".exe", ".dl"}:
             continue
         try:
             arch = architecture(args.objdump_x64, path)
@@ -137,7 +137,7 @@ def main():
                 name for name in shim_exports if name.startswith("D3DKMT")
             )
     for path in package_files:
-        if not path.is_file() or path.suffix.lower() not in {".dll", ".sys", ".exe"}:
+        if not path.is_file() or path.suffix.lower() not in {".dll", ".sys", ".exe", ".dl"}:
             continue
         try:
             arch = architecture(args.objdump_x64, path)
