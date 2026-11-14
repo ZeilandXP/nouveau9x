@@ -114,15 +114,20 @@ int
 NvxWinsysCloseNouveauChannel(NVX_WINSYS_DEVICE *device)
 {
    NVX_3D_CHANNEL_LEASE request, result;
+   uint32_t i;
    if (!nvx_winsys_ready(device) || !device->ClientToken)
       return 0;
-   if (device->NouveauBatchPushBuffer.BufferId) {
-      if (!NvxWinsysFreeBuffer(device,
-                               device->NouveauBatchPushBuffer.BufferId))
-         return 0;
-      memset(&device->NouveauBatchPushBuffer, 0,
-             sizeof(device->NouveauBatchPushBuffer));
+   for (i = 0; i < 4; i++) {
+      if (device->NouveauBatchPushBuffer[i].BufferId) {
+         if (!NvxWinsysFreeBuffer(device,
+                                  device->NouveauBatchPushBuffer[i].BufferId))
+            return 0;
+         memset(&device->NouveauBatchPushBuffer[i], 0,
+                sizeof(device->NouveauBatchPushBuffer[i]));
+      }
+      device->NouveauBatchLastFence[i] = 0;
    }
+   device->NouveauBatchPushIndex = 0;
    if (!device->NouveauChannelHandle &&
        !device->NouveauGraphicsObjectHandle &&
        !device->NouveauComputeObjectHandle)
@@ -428,7 +433,8 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
        !device->NouveauChannelHandle ||
        batch_bytes < sizeof(header) || batch_bytes > NVX_3D_MAX_BATCH_BYTES)
       return 0;
-   if (!device->NouveauBatchPushBuffer.BufferId) {
+   uint32_t slot_idx = device->NouveauBatchPushIndex % 4U;
+   if (!device->NouveauBatchPushBuffer[slot_idx].BufferId) {
       memset(&allocation, 0, sizeof(allocation));
       allocation.Size = sizeof(allocation);
       allocation.Version = NVX_3D_ABI_VERSION;
@@ -437,7 +443,9 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
       allocation.ClientToken = device->ClientToken;
       if (!NvxWinsysAllocBuffer(device, &allocation, &allocation_result))
          return 0;
-      device->NouveauBatchPushBuffer = allocation_result;
+      device->NouveauBatchPushBuffer[slot_idx] = allocation_result;
+   } else if (device->NouveauBatchLastFence[slot_idx]) {
+      (void)NvxWinsysWaitFence(device, device->NouveauBatchLastFence[slot_idx], 5000);
    }
    memcpy(&header, batch, sizeof(header));
    if (header.BufferReferenceCount >= NVX_3D_MAX_BATCH_BUFFERS ||
@@ -457,7 +465,7 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
    memcpy(submission, &header, sizeof(header));
    memcpy(submission+sizeof(header), (const uint8_t *)batch+sizeof(header),
           (size_t)references_bytes);
-   push_reference.BufferId=device->NouveauBatchPushBuffer.BufferId;
+   push_reference.BufferId=device->NouveauBatchPushBuffer[slot_idx].BufferId;
    push_reference.Access=NVX_3D_RELOC_WRITE;
    push_reference.Reserved=0;
    memcpy(submission+sizeof(header)+references_bytes,
@@ -475,6 +483,8 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
       return 0;
    }
    free(submission);
+   device->NouveauBatchLastFence[slot_idx] = result.FenceValue;
+   device->NouveauBatchPushIndex = (slot_idx + 1U) % 4U;
    *fence_value = result.FenceValue;
    return 1;
 }

@@ -19,7 +19,9 @@ typedef struct NVX_WINSYS_DEVICE {
    uint32_t NouveauChannelHandle;
    uint32_t NouveauGraphicsObjectHandle;
    uint32_t NouveauComputeObjectHandle;
-   NVX_3D_ALLOC_BUFFER NouveauBatchPushBuffer;
+   NVX_3D_ALLOC_BUFFER NouveauBatchPushBuffer[4];
+   uint64_t NouveauBatchLastFence[4];
+   uint32_t NouveauBatchPushIndex;
    NVX_3D_NVC0_OBJECT_BINDING NouveauObjectBindings[5];
    uint32_t NouveauObjectBindingCount;
 } NVX_WINSYS_DEVICE;

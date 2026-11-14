@@ -1,11 +1,11 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 14, 2026 after version `v3.0.0.191`.
+Updated November 14, 2026 after version `v3.0.0.192`.
 
-## Current status (v3.0.0.191)
+## Current status (v3.0.0.192)
 
-- Suppressed high-frequency batch, upload, download, and wait fence IOCTL log spew in `src_driver/nvxmp.c:HwVidStartIO` to prevent serial backpressure during continuous multi-frame rendering.
-- Added direct PBDMA GP_PUT update and posted-write flush in `src_driver/nvx_gsp.c:NvxGspSubmitNvc0Batch`.
+- Implemented a 4-slot ring buffer (`NouveauBatchPushBuffer[4]`) in `mesa_patches/nvx_winsys.c` with fence synchronization before buffer slot reuse (`NvxWinsysWaitFence`), preventing pushbuffer memory corruption and PBDMA prefetch stalls during continuous multi-frame rendering.
+- Reverted invalid direct PBDMA MMIO writes (`0x40000 + NVX_PPBDMA_GP_PUT_REL`) in `src_driver/nvx_gsp.c`, relying strictly on USERD `NV_RAMUSERD_GP_PUT` and runlist doorbell kickoff to prevent host/sequencer desynchronization.
 - Maintained clean `mesa/` submodule at commit `cc2dcf9abdc6`.
 
 The latest completed VFIO run `.149` booted and shut down normally. The
