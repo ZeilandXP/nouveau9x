@@ -180,6 +180,18 @@ elif [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll ]; then
     cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll "$NVX_SYSTEM32/d3d9.dll"
 fi
 
+if [ -f "$NVX_PACKAGE/d3d8.dll" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel"
+    cp -v "$NVX_PACKAGE/d3d8.dll" "$NVX_MOUNT/test_accel/d3d8.dll"
+    cp -v "$NVX_PACKAGE/d3d8.dll" "$NVX_SYSTEM32/d3d8.dll"
+fi
+
+if [ -f "$NVX_PACKAGE/ddraw.dll" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel"
+    cp -v "$NVX_PACKAGE/ddraw.dll" "$NVX_MOUNT/test_accel/ddraw.dll"
+    cp -v "$NVX_PACKAGE/ddraw.dll" "$NVX_SYSTEM32/ddraw.dll"
+fi
+
 if [ -f "$NVX_PACKAGE/wined3d.dll" ]; then
     mkdir -p "$NVX_MOUNT/test_accel"
     cp -v "$NVX_PACKAGE/wined3d.dll" "$NVX_MOUNT/test_accel/wined3d.dll"
@@ -207,8 +219,6 @@ cat << 'EOF' > "$NVX_MOUNT/test_accel/run_test.bat"
 @echo off
 cd /d C:\test_accel
 echo [TEST] Starting Antigravity GPU Accel Suite... > C:\test_accel.log
-test_gpu_accel.exe >> C:\test_accel.log 2>&1
-echo [TEST] 64-bit Test Return Code: %ERRORLEVEL% >> C:\test_accel.log
 if exist C:\test_accel\wglgears.exe (
     cd /d C:\test_accel
     set GALLIUM_DRIVER=nouveau
@@ -216,17 +226,20 @@ if exist C:\test_accel\wglgears.exe (
     wglgears.exe -info -seconds 6 >> C:\test_accel.log 2>&1
     echo [TEST] 64-bit wglgears Return Code: %ERRORLEVEL% >> C:\test_accel.log
 )
-if exist x86\test_gpu_accel32.exe (
-    cd /d C:\test_accel\x86
-    test_gpu_accel32.exe >> C:\test_accel.log 2>&1
-    echo [TEST] 32-bit Test Return Code: %ERRORLEVEL% >> C:\test_accel.log
-)
+cd /d C:\test_accel
+test_gpu_accel.exe >> C:\test_accel.log 2>&1
+echo [TEST] 64-bit Test Return Code: %ERRORLEVEL% >> C:\test_accel.log
 if exist C:\test_accel\x86\wglgears32.exe (
     cd /d C:\test_accel\x86
     set GALLIUM_DRIVER=nouveau
     echo [TEST] Running 32-bit wglgears 3D benchmark... >> C:\test_accel.log
     wglgears32.exe -info -seconds 6 >> C:\test_accel.log 2>&1
     echo [TEST] 32-bit wglgears Return Code: %ERRORLEVEL% >> C:\test_accel.log
+)
+if exist x86\test_gpu_accel32.exe (
+    cd /d C:\test_accel\x86
+    test_gpu_accel32.exe >> C:\test_accel.log 2>&1
+    echo [TEST] 32-bit Test Return Code: %ERRORLEVEL% >> C:\test_accel.log
 )
 echo [ALL_BENCHMARKS_FINISHED] Status: PASS >> C:\test_accel.log
 echo [TEST] ALL TESTS COMPLETE >> C:\test_accel.log

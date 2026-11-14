@@ -1,11 +1,12 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 14, 2026 after version `v3.0.0.188`.
+Updated November 14, 2026 after version `v3.0.0.189`.
 
-## Current status (v3.0.0.188)
+## Current status (v3.0.0.189)
 
-- Fixed `wined3d.dll` build pipeline in `test/test_full_driver.sh` to preserve the `nvxgdi.dl` import patch so `d3dkmtcloseadapter` resolves to `dist_full/nvxgdi.dl` instead of failing against XP's native `gdi32.dll`.
-- Fixed `wglgears` format selection: when `ChoosePixelFormat` returns an accelerated driver format (e.g. format 1 with `flags=0x425`), avoid overriding it with Mesa format 63 so that GDI WGL context creation succeeds without returning error 183.
+- Reordered test execution in `test/update_disk_driver_user.sh` so `wglgears.exe` runs before `test_gpu_accel.exe`, ensuring clean channel execution.
+- Added staging and deployment for `d3d8.dll` and `ddraw.dll` alongside `d3d9.dll`, `wined3d.dll`, and `libwine.dll` in `dist_full/install.bat` and `test/update_disk_driver_user.sh`.
+- Compiled and synced `dist_full/wglgears.exe` and `test/3d_tests/wglgears.exe` with direct Mesa ICD context fallback (`DrvCreateContext` and `DrvSetContext`).
 - Maintained clean `mesa/` submodule at commit `cc2dcf9abdc6`.
 
 The latest completed VFIO run `.149` booted and shut down normally. The

@@ -48,7 +48,10 @@ copy /y "%SRC_DIR%\nvxogl64.dll"  "%SYS32%\nvxogl64.dll"    >nul || goto :copy_f
 copy /y "%SRC_DIR%\nvx.inf"       "%SystemRoot%\inf\nvx.inf" >nul || goto :copy_fail
 if exist "%SRC_DIR%\nvxgdi.dl"    copy /y "%SRC_DIR%\nvxgdi.dl"    "%SYS32%\nvxgdi.dl"    >nul
 if exist "%SRC_DIR%\ucrtbase.dll" copy /y "%SRC_DIR%\ucrtbase.dll" "%SYS32%\ucrtbase.dll" >nul
+if exist "%SRC_DIR%\libwine.dll"  copy /y "%SRC_DIR%\libwine.dll"  "%SYS32%\libwine.dll"  >nul
 if exist "%SRC_DIR%\d3d9.dll"     copy /y "%SRC_DIR%\d3d9.dll"     "%SYS32%\d3d9.dll"     >nul
+if exist "%SRC_DIR%\d3d8.dll"     copy /y "%SRC_DIR%\d3d8.dll"     "%SYS32%\d3d8.dll"     >nul
+if exist "%SRC_DIR%\ddraw.dll"    copy /y "%SRC_DIR%\ddraw.dll"    "%SYS32%\ddraw.dll"    >nul
 if exist "%SRC_DIR%\wined3d.dll"  copy /y "%SRC_DIR%\wined3d.dll"  "%SYS32%\wined3d.dll"  >nul
 
 :: Stage a clean copy in C:\nvx_driver for Device Manager / PnP Wizard
@@ -61,7 +64,10 @@ if exist "%SRC_DIR%\test_gpu_accel.exe" copy /y "%SRC_DIR%\test_gpu_accel.exe" "
 if exist "%SRC_DIR%\wglgears.exe"       copy /y "%SRC_DIR%\wglgears.exe"       "%SystemDrive%\test_accel\wglgears.exe"       >nul
 if exist "%SRC_DIR%\nvxgdi.dl"          copy /y "%SRC_DIR%\nvxgdi.dl"          "%SystemDrive%\test_accel\nvxgdi.dl"          >nul
 if exist "%SRC_DIR%\ucrtbase.dll"       copy /y "%SRC_DIR%\ucrtbase.dll"       "%SystemDrive%\test_accel\ucrtbase.dll"       >nul
+if exist "%SRC_DIR%\libwine.dll"        copy /y "%SRC_DIR%\libwine.dll"        "%SystemDrive%\test_accel\libwine.dll"        >nul
 if exist "%SRC_DIR%\d3d9.dll"           copy /y "%SRC_DIR%\d3d9.dll"           "%SystemDrive%\test_accel\d3d9.dll"           >nul
+if exist "%SRC_DIR%\d3d8.dll"           copy /y "%SRC_DIR%\d3d8.dll"           "%SystemDrive%\test_accel\d3d8.dll"           >nul
+if exist "%SRC_DIR%\ddraw.dll"          copy /y "%SRC_DIR%\ddraw.dll"          "%SystemDrive%\test_accel\ddraw.dll"          >nul
 if exist "%SRC_DIR%\wined3d.dll"        copy /y "%SRC_DIR%\wined3d.dll"        "%SystemDrive%\test_accel\wined3d.dll"        >nul
 
 :: 3. Register nvxmp kernel service & display settings in Registry
