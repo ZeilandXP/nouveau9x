@@ -74,7 +74,11 @@ cp "$NVX_ROOT/test/test_gpu_accel.exe" "$NVX_ROOT/dist_full/test_gpu_accel.exe"
 cp "$NVX_ROOT/test/3d_tests/wglgears.exe" "$NVX_ROOT/dist_full/wglgears.exe"
 cp "$NVX_ROOT/test/ucrtbase.dll" "$NVX_ROOT/dist_full/ucrtbase.dll"
 if [ -d "$NVX_ROOT/test/wined3d_xp/x64" ]; then
-    cp -v "$NVX_ROOT/test/wined3d_xp/x64/"*.dll "$NVX_ROOT/dist_full/"
+    for dll in d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
+        if [ -f "$NVX_ROOT/test/wined3d_xp/x64/$dll" ]; then
+            cp -v "$NVX_ROOT/test/wined3d_xp/x64/$dll" "$NVX_ROOT/dist_full/"
+        fi
+    done
 elif [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll ]; then
     cp -v /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/d3d9.dll "$NVX_ROOT/dist_full/d3d9.dll"
     if [ -f /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/wined3d.dll ]; then

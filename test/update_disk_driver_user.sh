@@ -193,10 +193,14 @@ fi
 # Deploy 32-bit WineD3D for SysWOW64 if available
 if [ -d "$NVX_ROOT/test/wined3d_xp/x86" ]; then
     mkdir -p "$NVX_MOUNT/test_accel/x86"
-    cp -v "$NVX_ROOT/test/wined3d_xp/x86/"*.dll "$NVX_MOUNT/test_accel/x86/"
-    if [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ]; then
-        cp -v "$NVX_ROOT/test/wined3d_xp/x86/"*.dll "$NVX_MOUNT/WINDOWS/SysWOW64/"
-    fi
+    for dll in d3d9.dll d3d8.dll ddraw.dll wined3d.dll libwine.dll; do
+        if [ -f "$NVX_ROOT/test/wined3d_xp/x86/$dll" ]; then
+            cp -v "$NVX_ROOT/test/wined3d_xp/x86/$dll" "$NVX_MOUNT/test_accel/x86/"
+            if [ -d "$NVX_MOUNT/WINDOWS/SysWOW64" ]; then
+                cp -v "$NVX_ROOT/test/wined3d_xp/x86/$dll" "$NVX_MOUNT/WINDOWS/SysWOW64/"
+            fi
+        fi
+    done
 fi
 
 cat << 'EOF' > "$NVX_MOUNT/test_accel/run_test.bat"
