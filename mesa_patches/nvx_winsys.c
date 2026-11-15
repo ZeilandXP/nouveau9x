@@ -444,8 +444,13 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
       if (!NvxWinsysAllocBuffer(device, &allocation, &allocation_result))
          return 0;
       device->NouveauBatchPushBuffer[slot_idx] = allocation_result;
-   } else if (device->NouveauBatchLastFence[slot_idx]) {
-      (void)NvxWinsysWaitFence(device, device->NouveauBatchLastFence[slot_idx], 5000);
+   } else if (device->NouveauBatchLastFence[slot_idx] &&
+              !NvxWinsysWaitFence(device,
+                                  device->NouveauBatchLastFence[slot_idx],
+                                  5000U)) {
+      /* Never overwrite a pushbuffer BO while the GPU may still be reading
+       * it. A timed-out prior submission must stop this submission path. */
+      return 0;
    }
    memcpy(&header, batch, sizeof(header));
    if (header.BufferReferenceCount >= NVX_3D_MAX_BATCH_BUFFERS ||

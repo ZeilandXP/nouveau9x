@@ -3071,6 +3071,9 @@ BOOLEAN NTAPI HwVidStartIO(
         }
         if(!Nvx3dCollectBatchAllocations(engine,copiedInput,&header,
                 header.ClientToken,ownedAllocations,&ownedCount)) {
+            LogStr("NVX [NVC0-VALIDATE]: reject buffer ownership dwords=");
+            LogHex(header.DwordCount);LogStr(" refs=");
+            LogHex(header.BufferReferenceCount);LogStr("\n");
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;
             goto validate_batch_done;
         }
@@ -3078,6 +3081,10 @@ BOOLEAN NTAPI HwVidStartIO(
 
         if(!Nvx3dValidateNvc0Batch(copiedInput,requiredBytes,
                 ownedAllocations,ownedCount,header.ClientToken)) {
+            LogStr("NVX [NVC0-VALIDATE]: reject packet/address dwords=");
+            LogHex(header.DwordCount);LogStr(" refs=");
+            LogHex(header.BufferReferenceCount);LogStr(" relocs=");
+            LogHex(header.RelocationCount);LogStr("\n");
             status=ERROR_INVALID_PARAMETER;
             goto validate_batch_done;
         }
@@ -3085,6 +3092,18 @@ BOOLEAN NTAPI HwVidStartIO(
         status=NO_ERROR;
 
 validate_batch_done:
+        if(status!=NO_ERROR) {
+            LogStr("NVX [NVC0-VALIDATE]: rejected status=");
+            LogHex(status);LogStr(" bytes=");
+            LogHex(RequestPacket->InputBufferLength);
+            if(RequestPacket->InputBuffer&&
+               RequestPacket->InputBufferLength>=sizeof(header)) {
+                LogStr(" dwords=");LogHex(header.DwordCount);
+                LogStr(" refs=");LogHex(header.BufferReferenceCount);
+                LogStr(" relocs=");LogHex(header.RelocationCount);
+            }
+            LogStr("\n");
+        }
         if(ownedAllocations) VideoPortFreePool(devExt,ownedAllocations);
         if(copiedInput) VideoPortFreePool(devExt,copiedInput);
         break;
@@ -3154,6 +3173,9 @@ validate_batch_done:
         }
         if(!Nvx3dCollectBatchAllocations(engine,copiedInput,&header,
                 header.ClientToken,ownedAllocations,&ownedCount)) {
+            LogStr("NVX [NVC0-BATCH]: reject buffer ownership dwords=");
+            LogHex(header.DwordCount);LogStr(" refs=");
+            LogHex(header.BufferReferenceCount);LogStr("\n");
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;
             goto submit_batch_done;
         }
@@ -3259,6 +3281,18 @@ release_batch_buffers:
             Nvx3dUnlockBuffers();
         }
 submit_batch_done:
+        if(status!=NO_ERROR) {
+            LogStr("NVX [NVC0-BATCH]: IOCTL failed status=");
+            LogHex(status);LogStr(" bytes=");
+            LogHex(RequestPacket->InputBufferLength);
+            if(RequestPacket->InputBuffer&&
+               RequestPacket->InputBufferLength>=sizeof(header)) {
+                LogStr(" dwords=");LogHex(header.DwordCount);
+                LogStr(" refs=");LogHex(header.BufferReferenceCount);
+                LogStr(" relocs=");LogHex(header.RelocationCount);
+            }
+            LogStr("\n");
+        }
         if(ownedAllocations) VideoPortFreePool(devExt,ownedAllocations);
         if(copiedInput) VideoPortFreePool(devExt,copiedInput);
         break;
