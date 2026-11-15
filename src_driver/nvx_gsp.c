@@ -525,6 +525,77 @@ static BOOLEAN NvxGspControl(PNVX_DEVICE_EXTENSION dev,ULONG object,ULONG cmd,
     return TRUE;
 }
 
+/* Register framebuffer pages with OpenRM using the same ALLOC_MEMORY
+   rpc_alloc_memory_v13_01 path as upstream. This GSP rejects local-user
+   allocation and MAP_MEMORY_DMA; GPU VAs come from our preinstalled aperture. */
+BOOLEAN NvxGspAllocateVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
+                             ULONG64 physicalOffset,ULONG bytes,
+                             ULONG alignment,ULONG64 *gpuVa)
+{
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
+    ULONG pageCount,i,payloadWords;
+    ULONG *payload;
+    ULONG64 mappedVa;
+    if(!dev||!memoryHandle||!bytes||!gpuVa||!dev->GspInitialized||
+       !dev->GspDeviceHandle||!dev->GspVramGpuVa||!alignment||
+       (alignment&(alignment-1))||(physicalOffset&0xfffULL)||
+       (bytes&0xfffU)||physicalOffset>dev->GspVramMapBytes||
+       bytes>dev->GspVramMapBytes-physicalOffset||
+       physicalOffset>dev->GspFbFreeLimit||
+       bytes-1>dev->GspFbFreeLimit-physicalOffset||
+       physicalOffset>~0ULL-dev->GspVramGpuVa) return FALSE;
+    pageCount=bytes>>12;
+    /* RPC continuation records are staged in device-owned buffers; retain a
+       2MB margin below the 62-entry command queue limit for framing overhead. */
+    if(!pageCount||pageCount>30000) return FALSE;
+    mappedVa=dev->GspVramGpuVa+physicalOffset;
+    if(mappedVa&(alignment-1)) return FALSE;
+    payload=(ULONG *)dev->RpcControlPayload;
+    VideoPortZeroMemory(payload,(14+pageCount*2)*sizeof(ULONG));
+    payload[0]=dev->GspClientHandle;
+    payload[1]=dev->GspDeviceHandle;
+    payload[2]=memoryHandle;
+    payload[3]=0x82; /* NV01_MEMORY_LIST_FBMEM */
+    /* Match OpenRM's GSP page-list registration flags: NO_MAP and a supplied
+       page list. The list itself is in framebuffer PFNs below. */
+    payload[4]=0x40000010U;
+    payload[8]=bytes; /* 64-bit aligned length */
+    payload[10]=pageCount;
+    payload[12]=pageCount<<16; /* pte_desc: IDR_NONE and page count */
+    for(i=0;i<pageCount;i++) {
+        ULONG64 pfn=(physicalOffset>>12)+i;
+        payload[14+i*2]=(ULONG)pfn;
+        payload[15+i*2]=(ULONG)(pfn>>32);
+    }
+    payloadWords=14+pageCount*2;
+    if(!NvxGspCall(dev,4,payload,payloadWords*sizeof(ULONG))) {
+        LogStr("NVX [RM-BO]: ALLOC_MEMORY FB registration RPC failed handle=");
+        LogHex(memoryHandle);LogStr(" offset=");LogHex(physicalOffset);
+        LogStr(" pages=");LogHex(pageCount);LogStr("\n");return FALSE;
+    }
+    /* ALLOC_MEMORY returns only the RPC common header on success; unlike
+       object allocation, it does not echo the page-list parameters. */
+    *gpuVa=mappedVa;
+    LogStr("NVX [RM-BO]: OpenRM registered FB pages handle=");LogHex(memoryHandle);
+    LogStr(" va=");LogHex(mappedVa);LogStr(" physical-offset=");
+    LogHex(physicalOffset);LogStr(" bytes=");LogHex(bytes);
+    LogStr(" alignment=");LogHex(alignment);LogStr("\n");return TRUE;
+}
+
+BOOLEAN NvxGspFreeVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
+                         ULONG64 dmaOffset)
+{
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
+    ULONG payload[4];
+    if(!dev||!memoryHandle||dmaOffset<dev->GspVramGpuVa) return FALSE;
+    payload[0]=dev->GspClientHandle;payload[1]=dev->GspDeviceHandle;
+    payload[2]=memoryHandle;payload[3]=0; /* NVOS00 status output */
+    if(!NvxGspCall(dev,10,payload,sizeof(payload))) return FALSE;
+    /* RPC FREE also reports success in the common header without echo data. */
+    LogStr("NVX [RM-BO]: OpenRM deregistered FB pages handle=");
+    LogHex(memoryHandle);LogStr(" va=");LogHex(dmaOffset);LogStr("\n");return TRUE;
+}
+
 static BOOLEAN __attribute__((unused)) NvxGspGetClassEngineId(PNVX_DEVICE_EXTENSION dev,
     ULONG channel,ULONG object,ULONG *classEngineId)
 {

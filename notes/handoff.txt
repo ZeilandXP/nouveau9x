@@ -1,12 +1,12 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026 after hardware run `v3.0.0.197` (log `test_logs/v3.0.0.197-20261115-173254.log`).
+Updated November 15, 2026 for OpenRM FB page registration (`v3.0.0.201`); latest hardware log is `test_logs/v3.0.0.200-20261115-182947.log`.
 
 ## Latest Run & Artifacts
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.197-20261115-173254.log` (`vm_serial.log` points here)
-- **Latest hardware-tested version**: `v3.0.0.197`
-- **Next test version**: `v3.0.0.198`
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.200-20261115-182947.log`
+- **Latest hardware-tested version**: `v3.0.0.200`
+- **Current candidate**: `v3.0.0.201` fixes the NVOS00 status input for FB page-list deregistration; host/build checks passed before this one-word correction, hardware check pending.
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
 
 ---
@@ -122,18 +122,27 @@ The NVX driver stack enables hardware-accelerated 2D and 3D graphics on Windows 
 
 ---
 
-## Current Status (latest test: v3.0.0.197)
+## Current Status (latest hardware test: v3.0.0.200)
 
-The `.197` log confirms the ICD loads and reports `NV170`, but rendering is still unusable: the first submission (fence 3) times out and `wglgears` reports one frame in 85 seconds (0.012 FPS). PBDMA fetched the full pushbuffer; PB_GET is stuck at `pushVa + 0x480` (dword 288), with no PGRAPH trap. Firmware assertion count increases from 1 to 3 during the failed workload. No successful draw fence is reported.
+The `.198` test exercised the native Nouveau ICD (`GL_RENDERER = NV170`), and one workload rendered 300 frames at 55.2 FPS. It was not clean: `OPENGL_RESULT FAIL` followed, 64-bit wglgears exited with code 1, and the firmware assertion counter rose substantially. `.198` used `NV01_MEMORY_LOCAL_USER`, which the GSP rejected as unsupported.
 
-- **OpenGL Hardware Acceleration Pipeline**:
-  - Mesa builds with native Gallium `nouveau` and `softpipe` drivers for XP x64 (`nvxogl64.dll`).
-  - GSP-managed graphics channel, compute object, copy engine, 2D blitter, and M2MF/P2MF engines initialize on the RTX 3070.
-  - User-space ICD formats, context binding, and command submission reach the miniport, but real NVC0 submissions stall and release fences do not complete. Hardware-accelerated OpenGL is not usable yet.
-  - 2D solid fills, hardware rasterizer clears, and copy engine submissions pass hardware checks.
-  - Submodule `mesa/` remains clean at commit `cc2dcf9abdc6` with all XP/NVX modifications maintained as patches in `mesa_patches/`.
+The `.199` test confirmed RPC function 4 (`ALLOC_MEMORY`) returns success for FB page lists, but the caller incorrectly required echoed parameters, so BOs were discarded. `.200` removes that invalid check: the log confirms successful registration and deregistration for small buffers and successful registration of a 4 MiB BO. Nevertheless the first Nouveau batch stalls at PB_GET `pushVa + 0x480` (dword `0x120`) with USERD GET stuck at 4 and no release fence; later batches also time out. Firmware assertion count rises from 1 to 3. wglgears reports one frame in 84 seconds (0.012 FPS), and the full test exits with “hardware OpenGL was not proven”; no `[OPENGL_RESULT]` success marker appears. The C797 triangle probe and 2D success markers are also absent from this run because it stalls in the earlier Nouveau workload. This disproves FB page registration as the sole cause of the NVC0/P2MF submission stall; it does not disprove that registration is needed for OpenRM ownership.
+
+- Hardware 2D and the miniport rasterizer clear path remain previously verified. The current `.198` output does not establish a passing full 3D run.
+- `.200` corrects the response handling in the `.199` registration route with OpenRM 535's `ALLOC_MEMORY` RPC and `NV01_MEMORY_LIST_FBMEM` page registration, using the existing aperture VA/PTE tree. This is intentionally the GSP-supported registration path already used for scratch memory, extended to framebuffer PFNs.
+- Host checks and the XP x64 `nvxmp.sys` build pass after this change. Remaining compile warnings are pre-existing draw-probe pointer typing and unused fault-buffer helper warnings.
+- `mesa/` remains pinned and unmodified; XP customizations stay in `mesa_patches/`.
 
 ---
+
+## Current Implementation Under Hardware Test (v3.0.0.201)
+
+- Ordinary Nouveau VRAM BOs now register their FB page list with OpenRM via RPC function 4 (`ALLOC_MEMORY`), class `NV01_MEMORY_LIST_FBMEM` (`0x82`), using the `rpc_alloc_memory_v13_01` payload verified against the pinned OpenRM 535 generated structure and implementation. The BO GPU VA remains in the existing GSP-installed VRAM aperture; frees deregister the page-list object with RPC function 10.
+- `MAP_MEMORY_DMA` and `NV01_MEMORY_LOCAL_USER` are no longer used for these BOs: the `.198` hardware log showed the local-user class is unsupported, and this GSP build reports map-memory-dma as invalid.
+- Large page lists use device-owned RPC buffers and multi-record queue staging, avoiding a large kernel stack allocation. Range selection checks the current free FB heap and overlaps with live BOs.
+- The Gallium/Mesa GEM interface and GART-backed system-memory path are unchanged. Special depth BOs retain their legacy allocation/page-kind handling.
+- Host verification: `make -C src_driver check` passes; `make -C src_driver full` builds `nvxmp.sys` for XP x64.
+- `.200` hardware test confirmed FB registration succeeds. It reported deregistration success, but review found the NVOS00 status output field was initialized with the class ID; `.201` corrects that field and needs a hardware cleanup check. The NVC0 submission still stalls at the same PB_GET offset independently of this teardown detail.
 
 ## What Has Been Implemented & What Was Tried
 
@@ -166,7 +175,7 @@ The `.197` log confirms the ICD loads and reports `NV170`, but rendering is stil
 
 ---
 
-## Current Issues and Diagnostics (latest hardware run v3.0.0.197)
+## Current Issues and Diagnostics (latest hardware run v3.0.0.200)
 
 1. **GPU submissions stall before their release fence completes (confirmed in `.194`–`.197`)**:
    - First logged failure is fence `0x3`, push buffer VA `0x15F90000`; later fences time out too. USERD GET remains at `4` while PUT advances, with no PGRAPH trap reported. The `.197` run reports one `wglgears` frame in 85 seconds.
@@ -188,8 +197,8 @@ The `.197` log confirms the ICD loads and reports `NV170`, but rendering is stil
 4. **VRAM allocation pressure (observed in `.194`, causality unknown)**:
    - Two 64 MiB VRAM allocations fail while GART allocations continue. Track against the first submission timeout, but current evidence does not show this caused it.
 
-### Candidate test procedure
+### Next test procedure
 
-- Build and run `NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1 NVX_MESA_GALLIUM_BRIDGE=1 NVX_BUILD_MESA_ICD=1 ./test/test_full_driver.sh` from the repository root after incrementing the package version to `3.0.0.198`.
-- Add the discriminating GART-versus-VRAM P2MF upload/readback probe, bump the package version to `3.0.0.198`, and run the full VFIO script. The `.197` PB_GET window is already correlated with the Nouveau batch dump and the two windows match.
-- Require completed NVC0 draw fences, cube render-target readback, and multiple `wglgears` frames without GPU wait timeout or new firmware assertions before calling hardware OpenGL operational. `.197` has been hardware-tested and failed these criteria.
+- `.200` confirms FB page registration succeeds but leaves the batch stall unchanged; `.201` also corrects the FREE parameter block status field. Compare the failing method stream, bound P2MF object, channel/runlist and instance state directly with upstream Nouveau and OpenRM 535.
+- Add a minimal in-channel P2MF test with one small registered FB BO and one GART BO, plus readback/fence checks, before running the full app suite. The current large Nouveau workload blocks on its first release fence and makes the full boot test slow.
+- Require completed NVC0 draw fences, cube render-target readback, `OPENGL_RESULT` pass, and multiple successful wglgears frames before calling hardware OpenGL operational. `.198` rendered one workload at 55.2 FPS but failed later tests; `.199` exposed the return-payload validation bug; `.200` fixes registration but still stalls; `.201` corrects the deregistration status input.

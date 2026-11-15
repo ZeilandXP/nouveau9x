@@ -329,6 +329,10 @@ typedef struct _NVX_3D_USER_BUFFER_ENTRY {
     ULONG GartFirstPage;
     ULONG GartPageCount;
     BOOLEAN GartUnmapPending;
+    ULONG RmMemoryHandle;
+    ULONG64 RmPhysicalOffset;
+    ULONG64 RmGpuVa;
+    BOOLEAN RmMemoryRegistered;
     PVOID SystemVirtual;
     PHYSICAL_ADDRESS SystemPhysical;
 } NVX_3D_USER_BUFFER_ENTRY;
@@ -499,8 +503,8 @@ typedef struct _NVX_DEVICE_EXTENSION {
     ULONG GspGraphicsGPPut;
     ULONG RpcTxSequence,RpcRxSequence;
     NV2080_CTRL_GR_GET_CTX_BUFFER_INFO_PARAMS GrContextInfoParams;
-    UCHAR RpcTxRecord[32768];
-    UCHAR RpcControlPayload[32768];
+    UCHAR RpcTxRecord[262144];
+    UCHAR RpcControlPayload[262144];
     UCHAR RpcRxRecord[65536];
 } NVX_DEVICE_EXTENSION, *PNVX_DEVICE_EXTENSION;
 
@@ -588,6 +592,11 @@ BOOLEAN NvxGspReadUserSurface(PVOID HwDeviceExtension,ULONG64 srcVa,
                               PULONG output,ULONG outputPixels);
 BOOLEAN NvxGspReadUserBuffer(PVOID HwDeviceExtension,ULONG64 srcVa,
                              PVOID output,ULONG bytes);
+BOOLEAN NvxGspAllocateVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
+                             ULONG64 physicalOffset,ULONG bytes,
+                             ULONG alignment,ULONG64 *gpuVa);
+BOOLEAN NvxGspFreeVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
+                         ULONG64 dmaOffset);
 BOOLEAN NvxGspReadUserColorTargetTile(PVOID HwDeviceExtension,ULONG64 srcVa,
     ULONG targetWidth,ULONG targetHeight,ULONG tileMode,ULONG tileX,ULONG tileY,
     PULONG output,ULONG outputPixels);
