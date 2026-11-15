@@ -307,6 +307,78 @@ static VOID NvxGspLogPbdmaFault(PNVX_DEVICE_EXTENSION dev)
     }
 }
 
+/* On a fence timeout, PB_GET identifies the dword where PBDMA stopped
+ * consuming the submitted pushbuffer. Log a small window from both the
+ * validated IOCTL stream and the final GPU-visible stream so the command can
+ * be compared with Mesa's captured Nouveau pushbuffer. */
+static VOID NvxGspLogNvc0StallWindow(PNVX_DEVICE_EXTENSION dev,
+    const uint32_t *source, const ULONG *push, ULONG sourceDwords,
+    ULONG totalDwords, ULONG64 pushVa)
+{
+    ULONG i, start, end, found=FALSE;
+    ULONG64 stalledDword=0, pushEnd;
+
+    if(!dev||!dev->Bar0MmioVirtual||dev->Bar0Length<4U||
+       !source||!push||!totalDwords||
+       totalDwords>0xffffffffU/sizeof(ULONG)) return;
+    pushEnd=pushVa+(ULONG64)totalDwords*sizeof(ULONG);
+    if(pushEnd<pushVa) return;
+
+    for(i=0;i<NVX_GR_RUNLIST_PBDMA_CONFIG_COUNT;i++) {
+        ULONG configOffset=dev->GspGraphicsRunlistBase+
+                           NVX_GR_RUNLIST_PBDMA_CONFIG(i);
+        ULONG config,pbdmaBase,pbGet,pbGetHi;
+        ULONG64 pbGetAddress;
+        if(configOffset>dev->Bar0Length-4U) continue;
+        config=VideoPortReadRegisterUlong((PULONG)
+            ((PUCHAR)dev->Bar0MmioVirtual+configOffset));
+        if(!(config&NVX_GR_RUNLIST_PBDMA_CONFIG_VALID)) continue;
+        pbdmaBase=((config>>10)&0xffffU)<<10;
+        if(dev->Bar0Length<NVX_PPBDMA_PB_GET_HI_REL+4U||
+           pbdmaBase>dev->Bar0Length-NVX_PPBDMA_PB_GET_HI_REL-4U) continue;
+        pbGet=VideoPortReadRegisterUlong((PULONG)
+            ((PUCHAR)dev->Bar0MmioVirtual+pbdmaBase+NVX_PPBDMA_PB_GET_REL));
+        pbGetHi=VideoPortReadRegisterUlong((PULONG)
+            ((PUCHAR)dev->Bar0MmioVirtual+pbdmaBase+NVX_PPBDMA_PB_GET_HI_REL));
+        pbGetAddress=((ULONG64)pbGetHi<<32)|pbGet;
+        if(pbGetAddress>=pushVa&&pbGetAddress<=pushEnd) {
+            stalledDword=(pbGetAddress-pushVa)/sizeof(ULONG);
+            found=TRUE;
+            LogStr("NVX [NVC0-BATCH]: PB_GET window address=");
+            LogHex(pbGetAddress);LogStr(" pushVa=");LogHex(pushVa);
+            LogStr(" dword=");LogHex(stalledDword);
+            LogStr(" inDwords=");LogHex(sourceDwords);
+            LogStr(" totalDwords=");LogHex(totalDwords);LogStr("\n");
+            break;
+        }
+    }
+
+    if(!found) {
+        LogStr("NVX [NVC0-BATCH]: PB_GET did not resolve inside submitted buffer; pushVa=");
+        LogHex(pushVa);LogStr(" inDwords=");LogHex(sourceDwords);
+        LogStr(" totalDwords=");LogHex(totalDwords);LogStr("\n");
+        return;
+    }
+    start=stalledDword>16U?(ULONG)stalledDword-16U:0U;
+    end=(ULONG)stalledDword+32U;
+    if(end<stalledDword||end>totalDwords) end=totalDwords;
+    for(i=start;i<end;i++) {
+        if((i&7U)==(start&7U)) {
+            LogStr("NVX [NVC0-BATCH]: ioctl-window[");LogHex(i);LogStr("]");
+        }
+        if(i<sourceDwords) { LogStr(" ");LogHex(source[i]); }
+        else { LogStr(" <kernel-tail>"); }
+        if((i&7U)==7U||i+1U==end) LogStr("\n");
+    }
+    for(i=start;i<end;i++) {
+        if((i&7U)==(start&7U)) {
+            LogStr("NVX [NVC0-BATCH]: gpu-window[");LogHex(i);LogStr("]");
+        }
+        LogStr(" ");LogHex(push[i]);
+        if((i&7U)==7U||i+1U==end) LogStr("\n");
+    }
+}
+
 /* One synchronous post-init RPC. Unexpected events remain unconsumed. */
 static BOOLEAN NvxGspCall(PNVX_DEVICE_EXTENSION dev,ULONG expected,
                          const void *payload,ULONG bytes)
@@ -3575,18 +3647,9 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
     LogStr(" userdPut=");LogHex(userd[0x8c/4]);
     LogStr(" expectedPut=");LogHex(dev->GspGraphicsGPPut);LogStr(" fence=");
     LogHex(fenceValue);LogStr(" observed=");LogHex(fence[0]);LogStr("\n");
-    /* Capture the exact translated stream that faulted. Earlier diagnostics
-       only logged its first eight words and depended on a bounded Mesa-side
-       trace, which often stopped before the failing draw. */
-    for(i=0;i<totalDwords&&i<256U;i++) {
-        if((i&7U)==0) {
-            LogStr("NVX [NVC0-BATCH]: failed-stream[");
-            LogHex(i);LogStr("]");
-        }
-        LogStr(" ");LogHex(push[i]);
-        if((i&7U)==7U||i+1U==totalDwords||i+1U==256U)
-            LogStr("\n");
-    }
+    /* Dump at the hardware's actual PB_GET stop point; a fixed prefix can
+       omit the failing packet when the stream is larger than 256 dwords. */
+    NvxGspLogNvc0StallWindow(dev,nvc0Dwords,push,dwordCount,totalDwords,pushVa);
     for(i=0;i<tailCount;i++) {
         LogStr("NVX [NVC0-BATCH]: tail[");LogHex(i);LogStr("]=");
         LogHex(push[dwordCount+i]);LogStr("\n");

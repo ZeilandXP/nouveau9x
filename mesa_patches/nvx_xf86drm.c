@@ -123,6 +123,7 @@ static NVX_XF86DRM_STATUS nvx_drm_status;
 #if defined(_WIN32) || defined(_WIN64)
 static uint32_t nvx_drm_fence_trace_count;
 static uint32_t nvx_drm_prep_trace_count;
+static uint32_t nvx_drm_submit_trace_count;
 static uint32_t nvx_drm_prep_call_trace_count;
 static uint32_t nvx_drm_shadow_flush_trace_count;
 static uint32_t nvx_drm_vertex_upload_trace_count;
@@ -769,6 +770,7 @@ nvx_drm_submit_pushbuf(int fd,
    uint32_t vertex_dump_count = 0;
    struct nvx_drm_shader_dump shader_dumps[NVX_DRM_SHADER_DUMP_LIMIT];
    uint32_t shader_dump_count = 0;
+   uint32_t submit_ring_slot = 0;
 #endif
 
    if (!request || !request->nr_push ||
@@ -1045,6 +1047,9 @@ nvx_drm_submit_pushbuf(int fd,
 
    winsys = device->device;
    client_token = device->client_token;
+#if defined(_WIN32) || defined(_WIN64)
+   submit_ring_slot = winsys.NouveauBatchPushIndex % 4U;
+#endif
    nvx_drm_lock_release();
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -1094,6 +1099,17 @@ nvx_drm_submit_pushbuf(int fd,
    if (translated) {
       valid = NvxWinsysSubmitBatch(&winsys, batch, batch_bytes,
                                    &fence_value);
+#if defined(_WIN32) || defined(_WIN64)
+      if (nvx_drm_submit_trace_count < 32U) {
+         const NVX_3D_ALLOC_BUFFER *push_bo =
+            &winsys.NouveauBatchPushBuffer[submit_ring_slot];
+         uint32_t trace_index = nvx_drm_submit_trace_count++;
+         NvxWglRecordNouveauPushbufItem(18U, trace_index,
+            (uint32_t)push_bo->BufferId, submit_ring_slot, dword_count,
+            (uint32_t)fence_value, (uint32_t)push_bo->GpuVa,
+            (uint32_t)(push_bo->GpuVa >> 32));
+      }
+#endif
    }
    /* NvxWinsysSubmitBatch is the existing Nouveau-winsys ring implementation.
     * Preserve its ring state in the persistent per-device adapter object;
