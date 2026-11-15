@@ -109,6 +109,12 @@ Windows Registry Editor Version 5.00
 "Version"=dword:00000002
 "DriverVersion"=dword:00010000
 "Flags"=dword:00000001
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp]
+"Dll"="$NVX_OPENGL_ICD_DLL"
+"Version"=dword:00000002
+"DriverVersion"=dword:00010000
+"Flags"=dword:00000001
 REGFILE
 fi
 if [ -f "$NVX_PACKAGE/nvxmesa.dll" ]; then

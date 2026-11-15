@@ -94,6 +94,11 @@ reg add "%OGL_KEY%" /v Dll /t REG_SZ /d "nvxogl64.dll" /f %REG_VIEW% >nul
 reg add "%OGL_KEY%" /v DriverVersion /t REG_DWORD /d 65536 /f %REG_VIEW% >nul
 reg add "%OGL_KEY%" /v Flags /t REG_DWORD /d 1 /f %REG_VIEW% >nul
 reg add "%OGL_KEY%" /v Version /t REG_DWORD /d 2 /f %REG_VIEW% >nul
+set "OGL_WOW_KEY=HKLM\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp"
+reg add "%OGL_WOW_KEY%" /v Dll /t REG_SZ /d "nvxogl64.dll" /f %REG_VIEW% >nul
+reg add "%OGL_WOW_KEY%" /v DriverVersion /t REG_DWORD /d 65536 /f %REG_VIEW% >nul
+reg add "%OGL_WOW_KEY%" /v Flags /t REG_DWORD /d 1 /f %REG_VIEW% >nul
+reg add "%OGL_WOW_KEY%" /v Version /t REG_DWORD /d 2 /f %REG_VIEW% >nul
 
 :: 4. Run INF DefaultInstall & trigger Plug-and-Play device rescan
 echo [4/5] Running INF installation and PnP hardware scan...

@@ -962,8 +962,8 @@ static VOID NvxInitPrimaryDisplayModes(PNVX_DEVICE_EXTENSION devExt) {
     static const struct {
         ULONG w, h;
     } standardModes[] = {
-        { 1920, 1080 },
         { 2560, 1440 },
+        { 1920, 1080 },
         { 1920, 1200 },
         { 3840, 2160 },
         { 1680, 1050 },
@@ -1255,16 +1255,29 @@ BOOLEAN NTAPI HwVidInitialize(PVOID HwDeviceExtension) {
     LogStr("NVX [NATIVE]: Native GA104 Direct Modeset Selected (VBE bypassed)\n");
     NvxInitPrimaryDisplayModes(devExt);
 #else
-    /* Read real-mode information through VideoPort's INT10 service. If VBE INT10
-       is unavailable or rejected (e.g. on 32-bit HAL where INT10 write fails),
-       fall back directly to native primary display modes rather than failing init. */
+    /* Read real-mode information through VideoPort's INT10 service.
+       If VBE INT10 is unavailable, or if VBE only reports low/standard modes (<=1080p)
+       while the display or hardware supports higher native resolutions (such as 1440p/4K),
+       upgrade to authentic GA104 native display modes directly so 1440p is available. */
     if (!NvxVbeInitialize(HwDeviceExtension)) {
         LogStr("NVX [VBE]: VBE INT10 unavailable or rejected; falling back directly to native primary display modes.\n");
         NvxInitPrimaryDisplayModes(devExt);
-    } else if (devExt->NumModes <= 4) {
-        LogStr("NVX [NATIVE]: VBE reported degraded mode list (<=4 modes); upgrading to full native/DMT modes\n");
-        devExt->NumModes = 0;
-        NvxInitPrimaryDisplayModes(devExt);
+    } else {
+        /* Check if VBE max resolution is below 1440p (e.g. 1080p). If so, replace with full native/DMT modes */
+        ULONG maxVbeW = 0, maxVbeH = 0;
+        for (ULONG vi = 0; vi < devExt->NumModes; vi++) {
+            if (devExt->Modes[vi].VisScreenWidth > maxVbeW) {
+                maxVbeW = devExt->Modes[vi].VisScreenWidth;
+                maxVbeH = devExt->Modes[vi].VisScreenHeight;
+            }
+        }
+        if (devExt->NumModes <= 4 || maxVbeW < 2560) {
+            LogStr("NVX [NATIVE]: VBE capped at ");
+            LogHex(maxVbeW); LogStr("x"); LogHex(maxVbeH);
+            LogStr("; upgrading primary head to full native/DMT modes (up to 2560x1440/4K)\n");
+            devExt->NumModes = 0;
+            NvxInitPrimaryDisplayModes(devExt);
+        }
     }
 #endif
 

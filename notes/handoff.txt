@@ -1,11 +1,12 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 14, 2026 after version `v3.0.0.192`.
+Updated November 15, 2026 after version `v3.0.0.193`.
 
-## Current status (v3.0.0.192)
+## Current status (v3.0.0.193)
 
-- Implemented a 4-slot ring buffer (`NouveauBatchPushBuffer[4]`) in `mesa_patches/nvx_winsys.c` with fence synchronization before buffer slot reuse (`NvxWinsysWaitFence`), preventing pushbuffer memory corruption and PBDMA prefetch stalls during continuous multi-frame rendering.
-- Reverted invalid direct PBDMA MMIO writes (`0x40000 + NVX_PPBDMA_GP_PUT_REL`) in `src_driver/nvx_gsp.c`, relying strictly on USERD `NV_RAMUSERD_GP_PUT` and runlist doorbell kickoff to prevent host/sequencer desynchronization.
+- Upgraded primary display mode list in `src_driver/nvxmp.c:HwVidInitialize` to automatically bypass/replace degraded VBE INT10 mode lists (capped at 1080p) with full authentic GA104 native/DMT modes (prioritizing 2560x1440 native resolution, up to 3840x2160), resolving the issue where the 1st 1440p monitor was limited to 1080p.
+- Updated `src_driver/nvx_disp_rpc.c:NvxNativeSetSecondaryScanout` to target 2560x1440 for Head 0 by default when EDID timing is not preset, matching Head 1.
+- Added Wow6432Node OpenGL ICD registration (`nvxogl64.dll` under `HKLM\Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp`) across `dist_full/nvx.inf`, `dist_full/install.bat`, and `test/update_disk_driver_user.sh` to allow WOW64 OpenGL applications to discover driver formats and prevent falling back to GDI Generic.
 - Maintained clean `mesa/` submodule at commit `cc2dcf9abdc6`.
 
 The latest completed VFIO run `.149` booted and shut down normally. The

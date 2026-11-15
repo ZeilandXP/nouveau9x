@@ -443,9 +443,9 @@ BOOLEAN NvxNativeSetSecondaryScanout(PVOID extension)
         ULONG primMode = dev->CurrentModeIndex;
         if (primMode >= dev->NumModes || dev->Modes[primMode].BitsPerPlane != 32 ||
             dev->Modes[primMode].VisScreenWidth < 640) {
-            /* Match dynamically against Head 0 decoded EDID timing if available */
-            ULONG targetW = dev->MonitorTiming[0].hActive ? dev->MonitorTiming[0].hActive : 1920;
-            ULONG targetH = dev->MonitorTiming[0].vActive ? dev->MonitorTiming[0].vActive : 1080;
+            /* Match dynamically against Head 0 decoded EDID timing if available; default to 2560x1440 */
+            ULONG targetW = dev->MonitorTiming[0].hActive ? dev->MonitorTiming[0].hActive : 2560;
+            ULONG targetH = dev->MonitorTiming[0].vActive ? dev->MonitorTiming[0].vActive : 1440;
             for (ULONG m = 0; m < dev->NumModes; m++) {
                 if (dev->Modes[m].VisScreenWidth == targetW &&
                     dev->Modes[m].VisScreenHeight == targetH &&
