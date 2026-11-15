@@ -82,6 +82,10 @@ struct nvx_drm_device_slot {
    NVX_WINSYS_DEVICE device;
    uint64_t client_token;
    uint32_t next_handle;
+   /* The Linux Nouveau pushbuf keeps its ring in one winsys object. The
+    * Windows libdrm adapter snapshots that object around the IOCTL, so keep
+    * one submit in flight and copy the ring fields back before releasing it. */
+   int nouveau_submit_busy;
 #if defined(_WIN32) || defined(_WIN64)
    uint64_t shader_address[6];
    uint64_t shader_triangle_vertex_address;
@@ -759,7 +763,7 @@ nvx_drm_submit_pushbuf(int fd,
    uint32_t reference_bytes, dword_bytes, relocation_bytes, batch_bytes;
    uint64_t client_token;
    uint64_t fence_value = 0;
-   int valid = 0, translated = 0;
+   int valid = 0, translated = 0, submit_busy_owned = 0;
 #if defined(_WIN32) || defined(_WIN64)
    struct nvx_drm_vertex_dump vertex_dumps[NVX_DRM_VERTEX_DUMP_LIMIT];
    uint32_t vertex_dump_count = 0;
@@ -784,6 +788,10 @@ nvx_drm_submit_pushbuf(int fd,
    if (!device || !device->device.NouveauChannelHandle ||
        request->channel != device->device.NouveauChannelHandle)
       goto done;
+   if (device->nouveau_submit_busy)
+      goto done;
+   device->nouveau_submit_busy = 1;
+   submit_busy_owned = 1;
 
    for (i = 0; i < request->nr_buffers; i++) {
       struct nvx_drm_bo_slot *slot =
@@ -1087,6 +1095,25 @@ nvx_drm_submit_pushbuf(int fd,
       valid = NvxWinsysSubmitBatch(&winsys, batch, batch_bytes,
                                    &fence_value);
    }
+   /* NvxWinsysSubmitBatch is the existing Nouveau-winsys ring implementation.
+    * Preserve its ring state in the persistent per-device adapter object;
+    * otherwise every DRM ioctl starts again at slot zero and loses the fence
+    * protecting that staging BO. */
+   nvx_drm_lock_acquire();
+   device = nvx_drm_find_device_locked(fd);
+   if (device && device->client_token == client_token &&
+       device->nouveau_submit_busy) {
+      memcpy(device->device.NouveauBatchPushBuffer,
+             winsys.NouveauBatchPushBuffer,
+             sizeof(winsys.NouveauBatchPushBuffer));
+      memcpy(device->device.NouveauBatchLastFence,
+             winsys.NouveauBatchLastFence,
+             sizeof(winsys.NouveauBatchLastFence));
+      device->device.NouveauBatchPushIndex = winsys.NouveauBatchPushIndex;
+      device->nouveau_submit_busy = 0;
+   }
+   submit_busy_owned = 0;
+   nvx_drm_lock_release();
    if (valid && fence_value) {
       uint32_t reference_index;
       nvx_drm_lock_acquire();
@@ -1185,6 +1212,8 @@ nvx_drm_submit_pushbuf(int fd,
    return valid;
 
 done:
+   if (submit_busy_owned && device)
+      device->nouveau_submit_busy = 0;
    nvx_drm_lock_release();
    NvxWglRecordNouveauPushbufItem(6U, 0U, 0U,
                                   dword_count, reference_count,

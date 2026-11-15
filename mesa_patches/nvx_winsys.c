@@ -1,4 +1,9 @@
 #include "nvx_winsys.h"
+
+/* Fence values exposed by the NVX ABI are 32-bit. Reserve UINT64_MAX as a
+ * local marker for a staging BO whose submission failed ambiguously: the
+ * kernel may have queued it before a later fence wait timed out. */
+#define NVX_WINSYS_FENCE_QUARANTINED UINT64_MAX
 #include "nvx_nouveau_bo.h"
 
 #include <stdlib.h>
@@ -444,6 +449,11 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
       if (!NvxWinsysAllocBuffer(device, &allocation, &allocation_result))
          return 0;
       device->NouveauBatchPushBuffer[slot_idx] = allocation_result;
+   } else if (device->NouveauBatchLastFence[slot_idx] ==
+              NVX_WINSYS_FENCE_QUARANTINED) {
+      /* The submit ioctl failed after it may have made this BO visible to the
+       * GPU. Keep it allocated and never overwrite/recycle it this session. */
+      return 0;
    } else if (device->NouveauBatchLastFence[slot_idx] &&
               !NvxWinsysWaitFence(device,
                                   device->NouveauBatchLastFence[slot_idx],
@@ -485,6 +495,9 @@ NvxWinsysSubmitBatch(NVX_WINSYS_DEVICE *device,
        result.Size != sizeof(result) || result.Version != NVX_3D_ABI_VERSION ||
        !result.FenceValue) {
       free(submission);
+      device->NouveauBatchLastFence[slot_idx] =
+         NVX_WINSYS_FENCE_QUARANTINED;
+      device->NouveauBatchPushIndex = (slot_idx + 1U) % 4U;
       return 0;
    }
    free(submission);

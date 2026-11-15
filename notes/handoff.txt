@@ -1,12 +1,12 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026 for candidate version `v3.0.0.195` (not yet hardware-tested).
+Updated November 15, 2026 for candidate version `v3.0.0.196` (build candidate; not yet hardware-tested).
 
 ## Latest Run & Artifacts
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.194-20261115-140807.log`
-- **Latest hardware-tested version**: `v3.0.0.194`
-- **Next test version**: `v3.0.0.195`
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.195-20261115-155346.log`
+- **Latest hardware-tested version**: `v3.0.0.195`
+- **Next test version**: `v3.0.0.196`
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
 
 ---
@@ -122,9 +122,9 @@ The NVX driver stack enables hardware-accelerated 2D and 3D graphics on Windows 
 
 ---
 
-## Current Status (latest test: v3.0.0.194; candidate: v3.0.0.195)
+## Current Status (latest test: v3.0.0.195; candidate: v3.0.0.196)
 
-The build, unit testing (`make -C src_driver check && make -C src_driver`), and offline image deployment for driver package `v3.0.0.194` completed cleanly. The VM ran the full driver test suite and shut down.
+The `.195` log confirms that the ICD loads and reports `NV170`, and that batches reach the kernel submission path. The first submission waits for fence 3 and times out with `ERROR_NOT_READY`; PBDMA fetched the full pushbuffer, but PB_GET stopped partway through it, with no PGRAPH trap. The VM log ends during `wglgears`; no successful draw/fence or completed cube frames were recorded. The `.196` source/build candidate addresses a verified user-mode adapter state-loss bug; it has not been run on hardware.
 
 - **OpenGL Hardware Acceleration Pipeline**:
   - Mesa builds with native Gallium `nouveau` and `softpipe` drivers for XP x64 (`nvxogl64.dll`).
@@ -166,16 +166,17 @@ The build, unit testing (`make -C src_driver check && make -C src_driver`), and 
 
 ---
 
-## Current Issues and Candidate Fix (v3.0.0.195)
+## Current Issues and Candidate Fix (v3.0.0.196)
 
 1. **GPU submissions stall before their release fence completes (confirmed in `.194`)**:
    - First logged failure is fence `0x3`, push buffer VA `0x15F90000`; later fences time out too. USERD GET remains at `4` while PUT advances, with no PGRAPH trap reported. `wglgears` eventually reports only one frame in 483 seconds.
-   - **Candidate fix**: `mesa_patches/nvx_winsys.c` now refuses to recycle one of its four staging pushbuffer BOs if that slot's previous fence does not complete within five seconds. Previously the wait result was ignored, so the CPU could overwrite pushbuffer memory that the GPU might still be reading. This should prevent queue corruption after a stall; it is not yet proven to fix the initial GPU stall.
-   - **Next diagnostic**: Use the `.195` run to correlate the exact miniport IOCTL status with the existing PBDMA, USERD, and failed-stream dump. Do not increase the submission timeout as a substitute for fixing the queue.
+   - **Evidence in `.195`**: `nvx_drm_submit_pushbuf()` copied `device->device` into a stack-local `winsys`; `NvxWinsysSubmitBatch()` mutates its four-slot staging ring and last-fence fields on that copy. The adapter discarded the mutations at return, so later DRM submissions restarted at the same slot without seeing the recorded fence. The ring reuse guard in `nvx_winsys.c` therefore could not work across IOCTLs.
+   - **Candidate fix in `.196`**: Reuse the existing Mesa Nouveau winsys submission/ring (`NvxWinsysSubmitBatch`) and persist its updated push-buffer BO slots, per-slot fences, and ring index into the device object after each submission. Serialize calls with a per-device busy flag. If the submit escape fails without a confirmed fence, quarantine that staging BO and advance to another ring slot rather than risking reuse while the GPU may still read it. This fixes adapter state propagation and guards ambiguous failures; it is not yet proven to resolve the first GPU stall/fence timeout.
+   - **Open-module comparison**: The checked-out `open-gpu-kernel-modules` submodule is pinned at `535.113.01` (`f59818b`). `src/nvidia/src/kernel/gpu/mem_mgr/channel_utils.c:326` shows the host FIFO ordering: write GPFIFO entry, flush write-combine buffer, publish USERD GPPut, flush again, perform BAR0 PCIe flush, then ring the configured doorbell. `src/nvidia/src/kernel/gpu/fifo/arch/ampere/kernel_fifo_ga100.c:146` dispatches GSP systems to an internal doorbell helper. Our miniport already gets PBDMA fetch progress, so don’t replace the working Linux/Nouveau winsys with a second ring implementation; first test the `.196` state fix. Later compare GSP doorbell ordering against the GA100 path if PB_GET still stalls.
 
 2. **Mesa reports `kernel rejected pushbuf: Operation not permitted` (confirmed in `.194`)**:
    - The ICD and Nouveau screen initialize and renderer reports `NV170`; the pushbuf path reaches miniport submission, but Mesa's error text alone does not identify which validation or submission boundary returned failure.
-   - **Candidate diagnostics**: `src_driver/nvxmp.c` now logs rejection status and batch size/counts for validation and submit IOCTL failures, including explicit ownership and packet/address rejection messages. The existing `Nouveau pushbuf item kind=6` trace indicates whether object translation failed, submit failed, or succeeded. The `.195` trace should distinguish a malformed/rejected batch from a GPU timeout returned as a submission failure.
+   - **Evidence in `.195`**: `ERROR_NOT_READY` is returned after GPU fence wait timeout, not a batch-validation rejection. The detailed `NVC0-BATCH` and PBDMA diagnostics are in `src_driver/nvxmp.c` and `src_driver/nvx_gsp.c`.
 
 3. **Firmware assertion count increases during 3D startup (confirmed in `.194`)**:
    - Counter rises from 1 during startup to 3 as graphics work begins. No accompanying PGRAPH trap was captured, so the cause is not established. Compare `.195` assertion/RC-fault messages with the first failing batch before changing channel setup.
@@ -185,6 +186,6 @@ The build, unit testing (`make -C src_driver check && make -C src_driver`), and 
 
 ### Candidate test procedure
 
-- Build and run `NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1 NVX_MESA_GALLIUM_BRIDGE=1 NVX_BUILD_MESA_ICD=1 ./test/test_full_driver.sh` from the repository root. The script is set to package driver version `3.0.0.195`.
-- Check the log for `NVC0-VALIDATE` / `NVC0-BATCH: IOCTL failed` status lines, `Nouveau pushbuf item kind=6`, first PBDMA GET/PUT and fence state, assertion/RC-fault details, then verify repeated `wglgears` frames and render-target readback.
-- This candidate has not yet been booted on VFIO hardware. Do not mark the queue fix or OpenGL acceleration as passing until fences advance and multiple frames/readback are verified.
+- Build and run `NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1 NVX_MESA_GALLIUM_BRIDGE=1 NVX_BUILD_MESA_ICD=1 ./test/test_full_driver.sh` from the repository root. The script packages driver version `3.0.0.196`.
+- Check whether later batches use different staging BOs/fence slots and whether previous-slot waits/copyback persist; then inspect PB_GET progress, release-fence completion, PGRAPH traps, and firmware assertions. Require multiple `wglgears` frames and render-target readback before calling OpenGL hardware acceleration working.
+- The `.196` candidate is untested on VFIO hardware. User will run the hardware test.
