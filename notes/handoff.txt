@@ -1,12 +1,12 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026 for candidate version `v3.0.0.197` (PB_GET stall-window diagnostics; build candidate, not yet hardware-tested).
+Updated November 15, 2026 after hardware run `v3.0.0.197` (log `test_logs/v3.0.0.197-20261115-173254.log`).
 
 ## Latest Run & Artifacts
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.196-20261115-165809.log`
-- **Latest hardware-tested version**: `v3.0.0.196`
-- **Next test version**: `v3.0.0.197`
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.197-20261115-173254.log` (`vm_serial.log` points here)
+- **Latest hardware-tested version**: `v3.0.0.197`
+- **Next test version**: `v3.0.0.198`
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
 
 ---
@@ -122,9 +122,9 @@ The NVX driver stack enables hardware-accelerated 2D and 3D graphics on Windows 
 
 ---
 
-## Current Status (latest test: v3.0.0.196; candidate: v3.0.0.197)
+## Current Status (latest test: v3.0.0.197)
 
-The `.196` log confirms that the ICD loads and reports `NV170`, and that batches reach the kernel submission path. The first submission waits for fence 3 and times out with `ERROR_NOT_READY`; PBDMA fetched the full pushbuffer, but PB_GET stopped at `pushVa + 0x480` (dword 288), with no PGRAPH trap. The VM log records repeated submission timeouts and no successful draw fence or completed cube frames. Version `.197` adds a PB_GET-centered dump of the received command stream and final GPU-visible stream, correlated by pushbuffer VA; it is diagnostic and has not been hardware-tested.
+The `.197` log confirms the ICD loads and reports `NV170`, but rendering is still unusable: the first submission (fence 3) times out and `wglgears` reports one frame in 85 seconds (0.012 FPS). PBDMA fetched the full pushbuffer; PB_GET is stuck at `pushVa + 0x480` (dword 288), with no PGRAPH trap. Firmware assertion count increases from 1 to 3 during the failed workload. No successful draw fence is reported.
 
 - **OpenGL Hardware Acceleration Pipeline**:
   - Mesa builds with native Gallium `nouveau` and `softpipe` drivers for XP x64 (`nvxogl64.dll`).
@@ -166,13 +166,15 @@ The `.196` log confirms that the ICD loads and reports `NV170`, and that batches
 
 ---
 
-## Current Issues and Candidate Diagnostics (v3.0.0.197)
+## Current Issues and Diagnostics (latest hardware run v3.0.0.197)
 
-1. **GPU submissions stall before their release fence completes (confirmed in `.194`)**:
-   - First logged failure is fence `0x3`, push buffer VA `0x15F90000`; later fences time out too. USERD GET remains at `4` while PUT advances, with no PGRAPH trap reported. `wglgears` eventually reports only one frame in 483 seconds.
+1. **GPU submissions stall before their release fence completes (confirmed in `.194`–`.197`)**:
+   - First logged failure is fence `0x3`, push buffer VA `0x15F90000`; later fences time out too. USERD GET remains at `4` while PUT advances, with no PGRAPH trap reported. The `.197` run reports one `wglgears` frame in 85 seconds.
    - **Evidence in `.195`**: `nvx_drm_submit_pushbuf()` copied `device->device` into a stack-local `winsys`; `NvxWinsysSubmitBatch()` mutates its four-slot staging ring and last-fence fields on that copy. The adapter discarded the mutations at return, so later DRM submissions restarted at the same slot without seeing the recorded fence. The ring reuse guard in `nvx_winsys.c` therefore could not work across IOCTLs.
    - **`.196` candidate result**: Ring state persists across adapter calls and later requests use varying pushbuffer buffers, but the first hardware fence still times out. This change alone did not solve the stall.
-   - **`.197` diagnostics**: On timeout, read the live PB_GET/PB_GET_HI address, compute its dword offset within the submitted pushbuffer, and log a bounded window from both the received IOCTL stream and final GPU-visible stream. The previous fixed 256-dword prefix omitted the observed stop at dword 288. Mesa records the pushbuffer BO ID, GPU VA, ring slot, input dword count, and fence as trace item kind 18; its existing trace also captures source pushbuffer dwords and push metadata. No command-level cause has yet been proven.
+   - **`.197` batch correlation**: The first failed kernel batch is the same `0x29bc`-byte Nouveau pushbuffer dump (10 BO references, `0xa6f` input dwords). PB_GET stops at dword `0x120` inside the `NVA040_LAUNCH_DMA` / `LOAD_INLINE_DATA` upload that starts at dword `0x97`; received and GPU-visible windows match, ruling out corruption in the copy to the GPU-visible pushbuffer.
+   - **Packet validity check**: This P2MF sequence matches upstream `nve4_p2mf_push_linear()` in `mesa/src/gallium/drivers/nouveau/nvc0/nvc0_transfer.c`: destination `0x230204c8`, line length `0x288` bytes, one line, and an `EXEC` plus 162 inline data words. The destination is inside referenced VRAM BO `0x23020000` (4 MiB). The earlier upload targets `0x22e9f600`, inside referenced BO `0x22e20000` (512 KiB). The available evidence does not show a malformed packet length or out-of-range destination. It points to P2MF upload execution/backpressure or destination mapping/access, but does not prove which.
+   - **Next discriminating test**: Submit a minimal P2MF inline upload through the same Nouveau channel to a small GART-backed BO and to a VRAM BO, then read back each target and its fence. Compare with the already successful miniport C797 scratch upload, which exercises another class path. If GART succeeds and VRAM stalls, focus on RM/GPU-VA mapping and P2MF access for Nouveau VRAM allocations; if both stall, focus on P2MF object binding/classEngineID or upload setup. Avoid changing the upstream packet encoding without contrary evidence.
    - **Open-module comparison**: The checked-out `open-gpu-kernel-modules` submodule is pinned at `535.113.01` (`f59818b`). `src/nvidia/src/kernel/gpu/mem_mgr/channel_utils.c:326` shows the host FIFO ordering: write GPFIFO entry, flush write-combine buffer, publish USERD GPPut, flush again, perform BAR0 PCIe flush, then ring the configured doorbell. `src/nvidia/src/kernel/gpu/fifo/arch/ampere/kernel_fifo_ga100.c:146` dispatches GSP systems to an internal doorbell helper. Our miniport already gets PBDMA fetch progress, so don’t replace the working Linux/Nouveau winsys with a second ring implementation; compare ordering only if the `.197` command-level evidence points away from a bad packet.
 
 2. **Mesa reports `kernel rejected pushbuf: Operation not permitted` (confirmed in `.194`)**:
@@ -187,6 +189,6 @@ The `.196` log confirms that the ICD loads and reports `NV170`, and that batches
 
 ### Candidate test procedure
 
-- Build and run `NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1 NVX_MESA_GALLIUM_BRIDGE=1 NVX_BUILD_MESA_ICD=1 ./test/test_full_driver.sh` from the repository root. The script packages driver version `3.0.0.197`.
-- Inspect the `PB_GET window`, `ioctl-window`, and `gpu-window` lines at the first timeout and compare those dwords with the matching Nouveau capture in the copied user-mode `nouveau` log. Use trace item kind 18 to map GPU VA, BO ID, ring slot, input dword count, and fence. This should identify whether the stop is at a malformed command, unexpected state packet, or valid draw sequence; do not change command encoding until that comparison is made.
-- Require completed NVC0 draw fences, cube render-target readback, and multiple `wglgears` frames without GPU wait timeout or new firmware assertions before calling hardware OpenGL operational. `.197` is untested on VFIO; user will run the hardware test.
+- Build and run `NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1 NVX_MESA_GALLIUM_BRIDGE=1 NVX_BUILD_MESA_ICD=1 ./test/test_full_driver.sh` from the repository root after incrementing the package version to `3.0.0.198`.
+- Add the discriminating GART-versus-VRAM P2MF upload/readback probe, bump the package version to `3.0.0.198`, and run the full VFIO script. The `.197` PB_GET window is already correlated with the Nouveau batch dump and the two windows match.
+- Require completed NVC0 draw fences, cube render-target readback, and multiple `wglgears` frames without GPU wait timeout or new firmware assertions before calling hardware OpenGL operational. `.197` has been hardware-tested and failed these criteria.
