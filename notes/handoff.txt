@@ -10,6 +10,117 @@ Updated November 15, 2026 after version `v3.0.0.194`.
 
 ---
 
+## Design Architecture
+
+The NVX driver stack enables hardware-accelerated 2D and 3D graphics on Windows XP Professional x64 Edition running on modern Ampere (GA104) hardware. The stack consists of a dual-head XDDM display driver, an NT 5.2 miniport driver hosting an OpenRM GSP client, and a customized Mesa Gallium user-mode driver stack.
+
+```
++-----------------------------------------------------------------------------------------+
+|                                    USER MODE (Win32)                                    |
+|                                                                                         |
+|  [3D Apps: wglgears, test_gpu_accel, WineD3D]             [GDI / Desktop Applications]  |
+|                         |                                                |              |
+|                         v                                                v              |
+|        [OpenGL32.dll / WOW64 OpenGL32.dll]                         [GDI32.dll]          |
+|                         |                                                |              |
+|                         v                                                v              |
+|          +-------------------------------+                      +------------------+    |
+|          |    nvxogl64.dll (Mesa ICD)    |                      |   nvxdisp.dll    |    |
+|          |   - Gallium WGL Frontend      |                      |   (XDDM Display  |    |
+|          |   - Gallium NVC0 Driver       |                      |      Driver)     |    |
+|          |   - libdrm_nouveau emulation  |                      +------------------+    |
+|          |     (nvx_xf86drm, nvx_winsys) |                               |              |
+|          +-------------------------------+                               |              |
+|                         |                                                |              |
++-------------------------|------------------------------------------------|--------------+
+|                         | IOCTLs (Direct GDI / DeviceIoControl)          | EngDeviceIOCtl
+|                         v                                                v              |
++-----------------------------------------------------------------------------------------+
+|                                   KERNEL MODE (Ring 0)                                  |
+|                                                                                         |
+|                                     nvxmp.sys                                           |
+|       +-----------------------------------------------------------------------+         |
+|       | XDDM Miniport Driver Core (HwVidInitialize, HwVidStartIO, Interrupt) |         |
+|       | - 3D Client Session Manager (IOCTL_NVX_3D_CLIENT_INIT/CLOSE)          |         |
+|       | - BO / Buffer Allocator (VRAM & GART Virtual Memory Management)       |         |
+|       | - NVC0 Batch Validator & Ring Buffer Dispatcher                       |         |
+|       +-----------------------------------------------------------------------+         |
+|                                           |                                             |
+|                  +------------------------+-----------------------+                     |
+|                  v                                                v                     |
+|       +-----------------------+                       +-----------------------+         |
+|       |   Display Subsystem   |                       |  GSP Firmware Engine  |         |
+|       | - Dual-Head RPC       |                       | - Message Queue (MSGQ)|         |
+|       |   (Head 0 & Head 1)   |                       | - Channel Allocation  |         |
+|       | - Modeset & Scanout   |                       | - GPU VA MMU & GART   |         |
+|       | - VBE DMT Fallback    |                       | - Work Submission     |         |
+|       +-----------------------+                       +-----------------------+         |
+|                  |                                                |                     |
++------------------|------------------------------------------------|---------------------+
+|                  v                                                v                     |
+|       +-----------------------------------------------------------------------+         |
+|       |                 NVIDIA GeForce RTX 3070 (GA104 Hardware)              |         |
+|       | - Display Core (Cross-head Scanout, 2560x1440 DMT)                    |         |
+|       | - GSP RISC-V Core (gsp_ga104.bin firmware execution)                  |         |
+|       | - Engine subchannels: 0=3D (C797), 1=Compute, 2=P2MF/M2MF, 4=CE       |         |
+|       +-----------------------------------------------------------------------+         |
++-----------------------------------------------------------------------------------------+
+```
+
+### Key Architectural Layers
+
+1. **User-Mode OpenGL ICD (`nvxogl64.dll`)**:
+   - Built from Mesa 27.0.0-devel using MinGW-w64 targeting NT 5.2.
+   - Includes Mesa's native Gallium WGL frontend and `nvc0` driver.
+   - Emulates the Linux DRM/KMS Nouveau interface in user mode using `nvx_xf86drm.c`, `nvx_winsys.c`, and `nvx_nouveau_*.c`.
+   - Converts Gallium pipe operations into user buffer leases and NVC0 pushbuffer command packets forwarded directly to the miniport driver via `IOCTL_NVX_3D_SUBMIT_BATCH`.
+
+2. **Kernel Miniport Driver (`nvxmp.sys`)**:
+   - Implements standard Windows XP Video Port (XDDM) interfaces.
+   - Manages an internal GSP firmware runtime derived from open-gpu-kernel-modules, executing RISC-V GSP firmware (`gsp_ga104.bin`).
+   - Implements GPU virtual address space (GART and VRAM) management, channel leasing, and fence tracking.
+   - Validates NVC0 pushbuffers in kernel mode prior to writing to the GSP ring buffer, preventing GPU faults and illegal subchannel assignments.
+
+3. **Display Subsystem (`nvxdisp.dll` & `nvx_disp_rpc.c`)**:
+   - Provides 2D acceleration (solid fills, screen-to-screen copies via 2D and Copy Engines).
+   - Manages dual-head display hardware (Head 0 and Head 1) using GSP display RPC commands (`NvxNativeSetSecondaryScanout`).
+   - Bridges fallback VBE INT10 mode tables with full DMT mode tables up to 2560x1440 and 4K.
+
+---
+
+## Relevant Files & Code Locations
+
+### 1. Kernel-Mode Miniport Driver (`src_driver/`)
+- **`src_driver/nvxmp.c`**: Core driver entry, XDDM callbacks (`HwVidInitialize`, `HwVidStartIO`), 3D IOCTL dispatchers, buffer lifecycle management (`Nvx3dAllocBuffer`, `Nvx3dFreeBuffer`), GART page reclamation, and batch submission.
+- **`src_driver/nvx_gsp.c`**: Host-GSP communication, command message queue (MSGQ), channel allocation, pushbuffer kick-off (`NvxGspSubmitNvc0Batch`), and release fence tracking.
+- **`src_driver/nvx_disp_rpc.c`**: Dual-head display RPC controls, scanout configuration, EDID parsing, and secondary head management (`NvxNativeSetSecondaryScanout`).
+- **`src_driver/nvx_gr_context.c` / `nvx_gr_context.h`**: GART heap management (`NvxGartReserve`, `NvxGartRelease`) and GPU 3D graphics context structures.
+- **`src_driver/nvx_3d_abi.h`**: Public user/kernel interface definition: IOCTL codes (`IOCTL_NVX_3D_*`), buffer structures, batch headers, and kernel pushbuffer validator logic (`Nvx3dValidateNvc0ObjectBindingsEx`).
+- **`src_driver/nvx_mmu.c`**: Page directory and page table structure management for Ampere MMU.
+
+### 2. User-Mode Display Driver (`src_disp/`)
+- **`src_disp/nvxdisp.c`**: XDDM display driver entry points (`DrvEnableDriver`, `DrvEnablePDEV`, `DrvCompletePDEV`).
+- **`src_disp/opengl.c`**: Driver escape handling (`DrvEscape`) for OpenGL DDI discovery and ICD binding.
+- **`src_disp/screen.c`**: Mode enumeration, desktop surface allocation, and dual-monitor coordination.
+- **`src_disp/blt.c`**: Accelerated 2D blits, color fills, and copy-engine offload.
+
+### 3. User-Mode Mesa Gallium & DRM Compatibility (`mesa_patches/`)
+- **`mesa_patches/nvx_xf86drm.c`**: Emulated `libdrm` interface for Windows XP x64, translating DRM GEM allocations and pushbuffer flushes to Windows IOCTLs.
+- **`mesa_patches/nvx_winsys.c`**: Nouveau winsys implementation connecting the Gallium `pipe_screen` to the emulated DRM device.
+- **`mesa_patches/0031-nouveau-xp-use-m2mf-linear-copy.patch`**: Diverts `copy_data` to `nvc0_m2mf_copy_linear` (Subchannel 2) to eliminate CE/P2MF hazards on XP.
+- **`mesa_patches/0030-nouveau-xp-direct-linear-transfer-map.patch`**: Permits direct linear transfer maps for staging resources.
+- **`mesa_patches/0001-xp-win32-shims.patch`**: Core NT 5.2 / Win32 portability shims and compatibility overrides across Mesa.
+- **`mesa_patches/0002-nvx-gallium-bridge.patch`**: WGL ICD bridge export (`DrvCopyContext`, `DrvCreateContext`, `DrvSetContext`, etc.).
+
+### 4. Build, Packaging, and Test Harness (`test/` & `dist_full/`)
+- **`test/build_mesa_xp64.sh`**: Cross-compiles Mesa using MinGW-w64 and Meson into `nvxogl64.dll`.
+- **`test/apply_mesa_xp_patches.sh`**: Validates `mesa/` submodule commit and cleanly applies patches `0001` through `0031`.
+- **`test/test_full_driver.sh`**: Compiles driver components, verifies import tables, updates the guest disk image, and launches the QEMU/KVM VFIO guest.
+- **`test/update_disk_driver_user.sh`**: Mounts guest disk image via guestmount and updates system binaries and registry keys.
+- **`dist_full/nvx.inf`**: Windows XP setup information file registering driver services, display resolution defaults, and 32/64-bit OpenGL ICD registry entries.
+
+---
+
 ## Current Status (v3.0.0.194)
 
 The build, unit testing (`make -C src_driver check && make -C src_driver`), and offline image deployment for driver package `v3.0.0.194` completed cleanly. The VM ran the full driver test suite and shut down.
@@ -67,14 +178,3 @@ The build, unit testing (`make -C src_driver check && make -C src_driver`), and 
 
 3. **1st 1440p Monitor Capped at 1080p**:
    - Identified VBE mode enumeration falling back to standard 4-mode VBE tables when EDID was missing or degraded, capping Head 0 at 1920x1080 while Head 1 supported 2560x1440.
-
----
-
-## Source Tree & Repository Layout
-
-- `src_driver/`: Windows XP XDDM miniport driver (`nvxmp.sys`), GSP firmware host transport, MMU/GART page table manager, and display RPC engine.
-- `src_disp/`: XDDM user-mode display driver (`nvxdisp.dll`).
-- `mesa/`: Clean git submodule at commit `cc2dcf9abdc6`.
-- `mesa_patches/`: Set of 31 unified patch files applied by `test/apply_mesa_xp_patches.sh` and built via `test/build_mesa_xp64.sh`.
-- `dist_full/`: Active distribution package containing `nvxmp.sys`, `nvxdisp.dll`, `nvxogl64.dll`, `nvxmesa.dll`, `gsp_ga104.bin`, Direct3D/Wine shims, and test binaries.
-- `test_logs/`: Archive of all VM serial logs, including the latest `test_logs/v3.0.0.194-20261115-140807.log`.
