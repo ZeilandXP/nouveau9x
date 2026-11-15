@@ -1,12 +1,12 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026 after version `v3.0.0.193`.
+Updated November 15, 2026 after version `v3.0.0.194`.
 
-## Current status (v3.0.0.193)
+## Current status (v3.0.0.194)
 
-- Upgraded primary display mode list in `src_driver/nvxmp.c:HwVidInitialize` to automatically bypass/replace degraded VBE INT10 mode lists (capped at 1080p) with full authentic GA104 native/DMT modes (prioritizing 2560x1440 native resolution, up to 3840x2160), resolving the issue where the 1st 1440p monitor was limited to 1080p.
-- Updated `src_driver/nvx_disp_rpc.c:NvxNativeSetSecondaryScanout` to target 2560x1440 for Head 0 by default when EDID timing is not preset, matching Head 1.
-- Added Wow6432Node OpenGL ICD registration (`nvxogl64.dll` under `HKLM\Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp`) across `dist_full/nvx.inf`, `dist_full/install.bat`, and `test/update_disk_driver_user.sh` to allow WOW64 OpenGL applications to discover driver formats and prevent falling back to GDI Generic.
+- Eliminated CE vs P2MF engine hazard on Ampere GA104 in Mesa NVC0: routed linear copies (`nvc0->base.copy_data`) through P2MF/M2MF (`nvc0_m2mf_copy_linear`) via patch `mesa_patches/0031-nouveau-xp-use-m2mf-linear-copy.patch`, eliminating the asynchronous subchannel 4/2 pipeline stall and crash (`0xC0000005`) in 64-bit `wglgears.exe`.
+- Restored `NvxGartRelease` on confirmed unmap and client close in `src_driver/nvxmp.c`, preventing GART address space exhaustion and quarantine leaks across successive OpenGL runs.
+- Relaxed subchannel 0 class object re-binding requirement in `src_driver/nvxmp.c:IOCTL_NVX_3D_SUBMIT_BATCH` when graphics class engine ID is already bound, preventing false rejection of second run batches.
 - Maintained clean `mesa/` submodule at commit `cc2dcf9abdc6`.
 
 The latest completed VFIO run `.149` booted and shut down normally. The

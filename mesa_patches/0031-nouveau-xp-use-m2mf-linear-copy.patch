@@ -1,0 +1,17 @@
+diff --git a/src/gallium/drivers/nouveau/nvc0/nvc0_transfer.c b/src/gallium/drivers/nouveau/nvc0/nvc0_transfer.c
+index 7a2531e68e17..3c1e34581a98 100644
+--- a/src/gallium/drivers/nouveau/nvc0/nvc0_transfer.c
++++ b/src/gallium/drivers/nouveau/nvc0/nvc0_transfer.c
+@@ -614,7 +614,12 @@ nvc0_init_transfer_functions(struct nvc0_context *nvc0)
+ {
+    if (nvc0->screen->base.class_3d >= NVE4_3D_CLASS) {
+       nvc0->m2mf_copy_rect = nve4_m2mf_transfer_rect;
++#if defined(NVX_XP_WIN32_SHIMS) || defined(_WIN32)
++      /* Route linear copies through P2MF/M2MF on Windows XP to avoid CE/P2MF hazards */
++      nvc0->base.copy_data = nvc0_m2mf_copy_linear;
++#else
+       nvc0->base.copy_data = nve4_m2mf_copy_linear;
++#endif
+       nvc0->base.push_data = nve4_p2mf_push_linear;
+    } else {
+       nvc0->m2mf_copy_rect = nvc0_m2mf_transfer_rect;
