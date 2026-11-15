@@ -110,6 +110,16 @@ Windows Registry Editor Version 5.00
 "DriverVersion"=dword:00010000
 "Flags"=dword:00000001
 
+[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node]
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft]
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Windows NT]
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion]
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers]
+
 [HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp]
 "Dll"="$NVX_OPENGL_ICD_DLL"
 "Version"=dword:00000002
