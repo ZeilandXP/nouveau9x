@@ -868,8 +868,6 @@ nvx_drm_submit_pushbuf(int fd,
    for (i = 0; i < reference_count; i++) {
       struct nvx_drm_bo_slot *slot = NULL;
       uint32_t slot_index;
-      if (!(references[i].Access & NVX_3D_RELOC_READ))
-         continue;
       for (slot_index = 0; slot_index < NVX_DRM_BUFFER_SLOTS; slot_index++) {
          if (device->buffers[slot_index].handle &&
              device->buffers[slot_index].bo.allocation.BufferId ==
@@ -939,8 +937,9 @@ nvx_drm_submit_pushbuf(int fd,
          }
          continue;
       }
-      if (!slot->bo.map_count ||
-          !(slot->bo.map_access & NVX_NOUVEAU_BO_WRITE))
+      /* Nouveau's map access flags govern waits, not CPU write permission.
+       * Its access=0 paths write through cached shared mappings as well. */
+      if (!slot->bo.map_count)
          continue;
       if (!NvxNouveauBoFlush(&slot->bo))
          goto done;

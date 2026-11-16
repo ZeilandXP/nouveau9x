@@ -1,6 +1,27 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 16, 2026. Latest package: **3.0.0.235**.
+Updated November 16, 2026. Latest test build: **3.0.0.236**.
+
+### v3.0.0.236 shadow coherency fix (hardware test in progress)
+
+- Replaced access-flag-gated whole-BO shadow uploads with changed-dword
+  publication for every mapped BO referenced by a submission. This covers
+  upstream access=0/cached-map CPU writes and preserves unchanged GPU words.
+- Each mapped shadow tracks a baseline. The first publication initializes
+  previously undefined backing to match the shadow (including zero stores).
+  GPU read refresh merges unpublished CPU words instead of discarding them.
+  Changed uploads wait for the previous BO fence; failed final unmaps retain
+  the shadow for retry rather than dropping unpublished data.
+- The first 48 changed ranges per process log pushbuf item kind=19:
+  a=BufferId, b=offset, c=uploaded bytes, d=map access, e=GPU readback success,
+  f=sample matches CPU. Up to 64 bytes are independently read back per range;
+  a mismatch fails publication. Samples do not validate complete geometry.
+- Host checks passed before the final new-allocation zero regression was
+  added; the full runner repeats all checks. Added regression coverage for
+  writes via READ-labelled maps, preserving GPU changes elsewhere in a BO,
+  unchanged repeat flushes, merge on refresh, and initial backing contents.
+- Hardware outcome pending. The first build was stopped before deployment
+  to cover the initial-zero edge case; no guest boot occurred in that attempt.
 
 ## Current status
 

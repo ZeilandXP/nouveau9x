@@ -9,6 +9,7 @@ void NvxWglRecordNouveauPushbufItem(uint32_t kind, uint32_t index,
                                    uint32_t a, uint32_t b, uint32_t c,
                                    uint32_t d, uint32_t e, uint32_t f);
 static uint32_t nvx_bo_readmap_trace_count;
+static uint32_t nvx_bo_dirty_trace_count;
 #endif
 
 #define NVX_4K_GART_BO_POOL_CAPACITY 32
@@ -97,17 +98,33 @@ NvxNouveauBoMarkUsed(NVX_NOUVEAU_BO *bo, uint64_t fence_value)
 int
 NvxNouveauBoRefreshRead(NVX_NOUVEAU_BO *bo)
 {
-   if (!bo || !bo->references || !bo->shadow || !bo->map_count)
+   uint8_t *gpu;
+   uint32_t offset;
+   if (!bo || !bo->references || !bo->shadow || !bo->shadow_base || !bo->map_count)
       return 0;
    if (bo->shadow_fence >= bo->last_fence)
       return 1;
    if (bo->last_fence &&
        !NvxWinsysWaitFence(bo->device, bo->last_fence, 5000))
       return 0;
-   if (!NvxWinsysDownloadBuffer(bo->device, bo->allocation.BufferId,
-                               bo->allocation.Bytes, 0, bo->shadow,
-                               bo->allocation.Bytes))
+   gpu = (uint8_t *)malloc(bo->allocation.Bytes);
+   if (!gpu)
       return 0;
+   if (!NvxWinsysDownloadBuffer(bo->device, bo->allocation.BufferId,
+                               bo->allocation.Bytes, 0, gpu,
+                               bo->allocation.Bytes)) {
+      free(gpu);
+      return 0;
+   }
+   /* Preserve unpublished CPU words while refreshing words owned by the GPU.
+    * Nouveau can write a cached mapping without issuing another CPU_PREP. */
+   for (offset = 0; offset < bo->allocation.Bytes; offset += 4U) {
+      if (!memcmp(bo->shadow + offset, bo->shadow_base + offset, 4U))
+         memcpy(bo->shadow + offset, gpu + offset, 4U);
+   }
+   memcpy(bo->shadow_base, gpu, bo->allocation.Bytes);
+   bo->shadow_base_valid = 1U;
+   free(gpu);
    bo->shadow_fence = bo->last_fence;
    bo->contents_valid = 1;
    return 1;
@@ -119,18 +136,7 @@ NvxNouveauBoRefreshReadIfStale(NVX_NOUVEAU_BO *bo)
    if (!bo || !bo->references || !bo->shadow || !bo->map_count ||
        !(bo->map_access & NVX_NOUVEAU_BO_READ))
       return 0;
-   if (bo->shadow_fence >= bo->last_fence)
-      return 1;
-   if (bo->last_fence &&
-       !NvxWinsysWaitFence(bo->device, bo->last_fence, 5000))
-      return 0;
-   if (!NvxWinsysDownloadBuffer(bo->device, bo->allocation.BufferId,
-                               bo->allocation.Bytes, 0, bo->shadow,
-                               bo->allocation.Bytes))
-      return 0;
-   bo->shadow_fence = bo->last_fence;
-   bo->contents_valid = 1;
-   return 1;
+   return NvxNouveauBoRefreshRead(bo);
 }
 
 int
@@ -269,6 +275,14 @@ NvxNouveauBoMap(NVX_NOUVEAU_BO *bo, uint32_t access)
       memset(bo->shadow, 0, bo->allocation.Bytes);
    }
 
+   bo->shadow_base = (uint8_t *)malloc(bo->allocation.Bytes);
+   if (!bo->shadow_base) {
+      free(bo->shadow);
+      bo->shadow = NULL;
+      return NULL;
+   }
+   memcpy(bo->shadow_base, bo->shadow, bo->allocation.Bytes);
+   bo->shadow_base_valid = bo->contents_valid || bo->last_fence;
    bo->map_access = access;
    bo->map_count = 1;
    bo->shadow_fence = bo->last_fence;
@@ -278,18 +292,64 @@ NvxNouveauBoMap(NVX_NOUVEAU_BO *bo, uint32_t access)
 int
 NvxNouveauBoFlush(NVX_NOUVEAU_BO *bo)
 {
+   uint32_t offset = 0, uploaded = 0;
+   int waited = 0;
    if (!bo || !bo->references)
       return 0;
    if (!bo->map_count)
       return 1;
-   if (!bo->shadow)
+   if (!bo->shadow || !bo->shadow_base)
       return 0;
-   if (!(bo->map_access & NVX_NOUVEAU_BO_WRITE))
+   while (offset < bo->allocation.Bytes) {
+      uint32_t start = offset;
+      /* Skip unchanged pages quickly, then publish exact changed dwords.
+       * Whole-BO uploads can clobber GPU-written neighbouring allocations. */
+      if (bo->shadow_base_valid && !(offset & 4095U) &&
+          bo->allocation.Bytes - offset >= 4096U &&
+          !memcmp(bo->shadow + offset, bo->shadow_base + offset, 4096U)) {
+         offset += 4096U;
+         continue;
+      }
+      if (bo->shadow_base_valid &&
+          !memcmp(bo->shadow + offset, bo->shadow_base + offset, 4U)) {
+         offset += 4U;
+         continue;
+      }
+      do {
+         offset += 4U;
+      } while (offset < bo->allocation.Bytes &&
+               (!bo->shadow_base_valid ||
+                memcmp(bo->shadow + offset, bo->shadow_base + offset, 4U)));
+      if (!waited && bo->last_fence &&
+          !NvxWinsysWaitFence(bo->device, bo->last_fence, 5000))
+         return 0;
+      waited = 1;
+      if (!NvxWinsysUploadBuffer(bo->device, bo->allocation.BufferId,
+                                 bo->allocation.Bytes, start,
+                                 bo->shadow + start, offset - start))
+         return 0;
+#if defined(NVX_XP_WIN32_SHIMS) && \
+    (defined(_WIN32) || defined(_WIN64))
+      if (nvx_bo_dirty_trace_count < 48U) {
+         uint32_t gpu[16];
+         uint32_t sample = offset - start;
+         uint32_t ok, matches;
+         if (sample > sizeof(gpu)) sample = sizeof(gpu);
+         ok = (uint32_t)NvxWinsysDownloadBuffer(bo->device,
+            bo->allocation.BufferId, bo->allocation.Bytes, start, gpu, sample);
+         matches = ok && !memcmp(gpu, bo->shadow + start, sample);
+         NvxWglRecordNouveauPushbufItem(19U, nvx_bo_dirty_trace_count++,
+            (uint32_t)bo->allocation.BufferId, start, offset - start,
+            bo->map_access, ok, matches);
+         if (!matches) return 0;
+      }
+#endif
+      memcpy(bo->shadow_base + start, bo->shadow + start, offset - start);
+      uploaded += offset - start;
+   }
+   if (!uploaded)
       return 1;
-   if (!NvxWinsysUploadBuffer(bo->device, bo->allocation.BufferId,
-                              bo->allocation.Bytes, 0, bo->shadow,
-                              bo->allocation.Bytes))
-      return 0;
+   bo->shadow_base_valid = 1U;
    bo->contents_valid = 1;
    bo->shadow_fence = bo->last_fence;
    return 1;
@@ -304,14 +364,9 @@ NvxNouveauBoFlushRange(NVX_NOUVEAU_BO *bo, uint64_t offset, uint64_t bytes)
        offset > UINT32_MAX || bytes > UINT32_MAX || (offset & 3U) ||
        (bytes & 3U))
       return 0;
-   if (!NvxWinsysUploadBuffer(bo->device, bo->allocation.BufferId,
-                              bo->allocation.Bytes, (uint32_t)offset,
-                              bo->shadow + (size_t)offset,
-                              (uint32_t)bytes))
-      return 0;
-   bo->contents_valid = 1U;
-   bo->shadow_fence = bo->last_fence;
-   return 1;
+   /* Publish all CPU changes without overwriting unchanged GPU-owned words.
+    * The caller's span remains validated, but is not an ownership boundary. */
+   return NvxNouveauBoFlush(bo);
 }
 
 int
@@ -321,19 +376,17 @@ NvxNouveauBoUnmap(NVX_NOUVEAU_BO *bo)
 
    if (!bo || !bo->map_count || !bo->shadow)
       return 0;
-   if (--bo->map_count)
+   if (bo->map_count > 1U) {
+      bo->map_count--;
       return 1;
-
-   if (bo->map_access & NVX_NOUVEAU_BO_WRITE) {
-      if (!NvxWinsysUploadBuffer(bo->device, bo->allocation.BufferId,
-                                 bo->allocation.Bytes, 0, bo->shadow,
-                                 bo->allocation.Bytes))
-         result = 0;
-      else
-         bo->contents_valid = 1;
    }
+   result = NvxNouveauBoFlush(bo);
+   if (!result) return 0;
+   bo->map_count = 0;
 
    free(bo->shadow);
+   free(bo->shadow_base);
+   bo->shadow_base = NULL;
    bo->shadow = NULL;
    bo->map_access = 0;
    return result;

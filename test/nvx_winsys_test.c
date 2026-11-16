@@ -537,7 +537,7 @@ main(void)
       mapped[0] = 0xA5;
       assert(NvxNouveauBoUnmap(&bo));
       assert(find_buffer(&mock, bo.allocation.BufferId)->storage[0] == 0xA5);
-      assert(mock.upload_bytes == bytes + 4096);
+      assert(mock.upload_bytes == bytes + 4);
 
       mapped = NvxNouveauBoMap(&bo, NVX_NOUVEAU_BO_WRITE);
       assert(mapped && mapped[0] == 0xA5 && mapped[1] == 0);
@@ -546,14 +546,15 @@ main(void)
       assert(find_buffer(&mock, bo.allocation.BufferId)->storage[0] == 0xA5 &&
              find_buffer(&mock, bo.allocation.BufferId)->storage[1] == 0x5A);
       assert(mock.download_bytes == bytes + 12288);
-      assert(mock.upload_bytes == bytes + 8192);
+      assert(mock.upload_bytes == bytes + 8);
 
       mapped = NvxNouveauBoMap(&bo, NVX_NOUVEAU_BO_WRITE);
       assert(mapped);
       mapped[2] = 0x3C;
       mock.event_count = 0;
       assert(NvxNouveauBoFlush(&bo));
-      assert(mock.event_count == 1 && mock.events[0] == MOCK_EVENT_UPLOAD);
+      assert(mock.event_count == 2 && mock.events[0] == MOCK_EVENT_WAIT &&
+             mock.events[1] == MOCK_EVENT_UPLOAD);
       assert(find_buffer(&mock, bo.allocation.BufferId)->storage[2] == 0x3C);
       assert(bo.map_count == 1 && bo.shadow == mapped);
       /* Simulate a render-target write by the GPU while Mesa keeps its CPU
@@ -585,6 +586,34 @@ main(void)
       assert(find_buffer(&mock, bo.allocation.BufferId)->storage[2] == 0xA4);
       assert(NvxNouveauBoUnmap(&bo));
       assert(NvxNouveauBoFlush(&bo));
+
+      /* Upstream BO_MAP(access=0) arrives as READ in the XP adapter, but
+       * still permits writes. Publish those changes without replacing GPU
+       * words elsewhere in the same mapped BO. */
+      mapped = NvxNouveauBoMap(&bo, NVX_NOUVEAU_BO_READ);
+      assert(mapped);
+      {
+         uint32_t before = mock.upload_bytes;
+         struct mock_buffer *backing = find_buffer(&mock, bo.allocation.BufferId);
+         mapped[64] = 0xB6;
+         backing->storage[128] = 0xC7;
+         assert(NvxNouveauBoMarkUsed(&bo, 80));
+         assert(NvxNouveauBoFlush(&bo));
+         assert(backing->storage[64] == 0xB6);
+         assert(backing->storage[128] == 0xC7);
+         assert(mock.upload_bytes == before + 4);
+         assert(NvxNouveauBoFlush(&bo));
+         assert(mock.upload_bytes == before + 4);
+         /* Refresh must merge GPU words without dropping pending CPU data. */
+         mapped[192] = 0xD8;
+         backing->storage[256] = 0xE9;
+         assert(NvxNouveauBoMarkUsed(&bo, 81));
+         assert(NvxNouveauBoRefreshRead(&bo));
+         assert(mapped[192] == 0xD8 && mapped[256] == 0xE9);
+         assert(NvxNouveauBoFlush(&bo));
+         assert(backing->storage[192] == 0xD8 && backing->storage[256] == 0xE9);
+      }
+      assert(NvxNouveauBoUnmap(&bo));
 
       NvxNouveauBoReference(&bo);
       assert(bo.references == 2);
@@ -622,11 +651,15 @@ main(void)
       assert(first.allocation.GpuVa != second.allocation.GpuVa);
 
       downloads_before = mock.download_count;
+      /* Undefined initial GPU storage must become the same zero image as
+       * the newly mapped shadow, including CPU stores of zero. */
+      find_buffer(&mock, first.allocation.BufferId)->storage[8] = 0xA5;
       mapped = NvxNouveauBoMap(&first, NVX_NOUVEAU_BO_WRITE);
       assert(mapped && mapped[0] == 0 && mapped[1] == 0);
       assert(mock.download_count == downloads_before);
       mapped[0] = 0x31;
       assert(NvxNouveauBoUnmap(&first));
+      assert(find_buffer(&mock, first.allocation.BufferId)->storage[8] == 0);
       assert(mock.download_count == downloads_before);
       mapped = NvxNouveauBoMap(&second, NVX_NOUVEAU_BO_WRITE);
       assert(mapped && mapped[0] == 0);

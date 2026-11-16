@@ -10,6 +10,10 @@ typedef struct NVX_NOUVEAU_BO {
    NVX_WINSYS_DEVICE *device;
    NVX_3D_ALLOC_BUFFER allocation;
    uint8_t *shadow;
+   /* Last CPU/GPU image known to be published. Detect writes through cached
+    * mappings independently of Nouveau's synchronization-only access flags. */
+   uint8_t *shadow_base;
+   uint32_t shadow_base_valid;
    uint64_t last_fence;
    uint64_t shadow_fence;
    uint32_t references;
@@ -44,10 +48,11 @@ int NvxNouveauBoBuildRelocation(const NVX_NOUVEAU_BO *bo,
                                 uint64_t bytes, uint32_t access,
                                 NVX_NOUVEAU_RELOCATION *relocation);
 void *NvxNouveauBoMap(NVX_NOUVEAU_BO *bo, uint32_t access);
-/* Publish writes from a persistent CPU mapping before a GPU submission. */
+/* Publish changed CPU words regardless of synchronization access flags. */
 int NvxNouveauBoFlush(NVX_NOUVEAU_BO *bo);
-/* Upload a CPU-shadow range consumed as NVC0 vertex input. Mesa may modify a
- * cached map without widening its original map access flags. */
+/* Validate an input range and publish pending CPU changes. Mesa may modify a
+ * cached map without widening its original map access flags. Unchanged words
+ * retain the GPU's current contents. */
 int NvxNouveauBoFlushRange(NVX_NOUVEAU_BO *bo, uint64_t offset,
                            uint64_t bytes);
 int NvxNouveauBoUnmap(NVX_NOUVEAU_BO *bo);
