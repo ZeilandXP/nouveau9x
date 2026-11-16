@@ -106,6 +106,17 @@ static void test_falcon_idle(void)
 
 int main(void)
 {
+    NvU32 flags=0,token=0;
+    assert(nvx_openrm_channel_identity(3,0,&flags,&token));
+    assert(flags==0x00200320U && token==3U);
+    assert(nvx_openrm_channel_identity(8,5,&flags,&token));
+    assert(flags==0x00201020U && token==0x00050008U);
+    assert(nvx_openrm_channel_identity(34,0,&flags,&token));
+    assert(flags==0x00204220U && token==34U);
+    assert(!nvx_openrm_channel_identity(4096,0,&flags,&token));
+    assert(!nvx_openrm_channel_identity(3,128,&flags,&token));
+    assert(!nvx_openrm_channel_identity(3,0,NULL,&token));
+
     test_register_access();
     test_memory_ops();
     test_msgq_notification();

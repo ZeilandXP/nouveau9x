@@ -96,6 +96,7 @@ BOOLEAN NvxGspCloseClientChannel(PVOID extension,ULONG64 token)
 /* Bind only the class and fence the private queue. No boot draw state is
  * inherited. This also makes a 3D completion tail valid if Mesa's first batch
  * contains only auxiliary-engine setup before its own 3D SET_OBJECT. */
+#if NVX_ENABLE_GR_CHANNEL_PROBE
 static BOOLEAN NvxGrVerifyClientQueue(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CHANNEL *c)
 {
     PUCHAR scratch=c->Virtual;
@@ -130,6 +131,8 @@ static BOOLEAN NvxGrVerifyClientQueue(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CH
     c->Faulted=TRUE;
     return FALSE;
 }
+
+#endif
 
 BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     PVOID backing,PHYSICAL_ADDRESS physical,ULONG64 gpuVa,ULONG64 bufferId)

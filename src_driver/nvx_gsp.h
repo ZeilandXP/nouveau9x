@@ -4,6 +4,7 @@
 #include "miniport.h"
 #include "nvx_display.h"
 #include "nvx_gr_context.h"
+#include "nvx_3d_abi.h"
 #include "include/nvx_nvidia_open_shim.h"
 
 #define MAX_NVX_MODES 32

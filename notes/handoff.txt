@@ -1,6 +1,20 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 16, 2026: .214 per-client RM graphics-channel candidate implemented and built. Latest measured hardware result remains .213. Concurrent application support is not hardware-proven yet; do not present the new build as a tested multi-application pass.
+Updated November 16, 2026 after .214 hardware test: a private client queue verifies and renders the NV170 cube with completed GPU draw fences, but subsequent work on the retained boot GR channel fails and assertions rise 1 -> 5. The suite exits 1. Multi-application operation is not proven; .214 is a failed integration candidate, not a complete multi-client pass.
+
+## .214 hardware result: private rendering passes, return to boot GR fails
+
+- Log: test_logs/v3.0.0.214-20261116-103335.log; suite output /tmp/nvx-214-full-test.log. Exactly one successful VFIO guest test session; two earlier suite attempts stopped in host compilation before launching a VM.
+- Host integration fixes made before hardware run: nvx_gsp.h now includes its ABI dependency explicitly; mock runners copy the new included nvx_gr_clients.c and required ABI headers; guard the GR queue-verification helper when GR support is disabled. Full host suite, driver build and XP import audit subsequently pass. Added/passed OpenRM shim checks for IDs 3/8/34, runlist token encoding and invalid inputs (/tmp/nvx-214-shim-test.log).
+- Boot triangle PASS: 512 green + 512 white pixels.
+- Private client queue verified: token 0x29c4296600000004, RM channel 0x61000305, hardware submit token 6, queue VA 0x11a00000, context VA 0x11c00000. This directly exercises the new per-client backing and reserved channel-identity shim.
+- Cube: renderer NV170, 300 frames / 4.9883s (60.1 FPS). Native draw logs on that private channel confirm expected/observed fences 5/6/11/12. This proves one private client channel executes real GR work; it does not establish concurrent application support or correct visible cube geometry.
+- FAILURE: following validated native-clear diagnostics still submit through the retained boot channel (GPFIFO at 0x10009000). Fences 0x70f/0x710 stay zero; later GR timeout expects 0x711 with USERD GP_GET=1, GP_PUT=4. Boot queue does not resume as expected after private-client rendering. Assertions increase from boot baseline 1 to 5 when firmware notifications are drained during later RM work.
+- Boot failure sets device GspGraphicsChannelFaulted. Current private-submit admission still checks that boot flag, so subsequent batches for the otherwise distinct client are rejected (owner/channel 0x61000305). Fault containment is therefore still coupled to the diagnostic channel at this admission check.
+- Only one GR-CLIENT private-queue verification appears. Later gears remains software (GDI Generic) or fails context creation; the x86 ICD load error remains. No two application clients were observed rendering concurrently, and no concurrent-process probe was added to this sequential suite.
+- Full script exits 1 via the native submission failure gate despite OPENGL_RESULT RENDERED. VM runner ends session and harvests traces; this does not independently establish graceful XP shutdown. No second hardware revision/run attempted.
+- Next fix: trace boot/private channel switching and scheduler/USERD ownership. In particular, reserved IDs 2 and 6 occupy the same hardware USERD page while using separate backing; audit whether the host-RM/GSP page-allocation contract requires shared page backing or separate reserved USERD pages. This is a hypothesis, not a confirmed cause. Also audit shared context-buffer scope and boot scheduling state, and separate boot-channel fault admission from client-local failure where hardware state permits. Then verify two application channels, close-one/continue-other, and reopen.
+- Relevant files: src_driver/nvx_gr_clients.c, nvx_openrm_shim.c, nvx_gsp.c (legacy native clear, native batch admission/fences), nvxmp.c, and src_driver/tests/run_*_host_test.sh. Preserve this measured failure before further edits.
 
 ## .214 candidate: independent client graphics contexts
 
@@ -17,7 +31,7 @@ Updated November 16, 2026: .214 per-client RM graphics-channel candidate impleme
 ### Build/status/limits
 
 - XP x64 miniport build succeeded without warnings: make -C src_driver full-gr-probe NVX_ENABLE_GR_CHANNEL_PROBE=1 NVX_ENABLE_GR_PROMOTE_PROBE=1 NVX_ENABLE_GR_SUBMISSION_PROBE=1. Build log /tmp/nvx-214-build.log. Updated dist_full/nvxmp.sys and candidate INF/test-runner version .214.
-- No host tests or VFIO run performed for .214. Previous .213 results do not validate the new allocation, promotion, token or teardown path.
+- Initial candidate was build-only; the subsequent .214 host/VFIO results and regression are recorded above. Previous .213 results do not validate the new allocation, promotion, token or teardown path.
 - Important limits: clients still use disjoint mappings in one device VASpace, not per-process GPU address-space isolation. CPU submission remains synchronous and serialized by the existing GR submission lock; this is not asynchronous upstream scheduling throughput. The shared GART aperture/BO table and 32 session slots bound capacity; each graphics client now consumes at least 14 MiB before Mesa's BOs. Full host RM memory management is not ported.
 - Normal DLL/process termination still supplies the close request. Forced process kill/crash cleanup is not kernel handle-owned yet. The legacy wait-fence ABI also remains device-scoped; failed live-channel fences are rejected explicitly, but replacing it with client-scoped fence ownership remains follow-up work.
 - Next verification: boot the candidate, verify first-client initialization and pixel readback, then run two x64 OpenGL applications concurrently. Require distinct channel/queue/context addresses and completed native draw fences from both; close one and prove the other continues, then reopen. Separately check WineD3D, x86 dependencies and pixel-format selection. Do not use software renderer FPS or a single RENDERED marker as a multi-client pass.
@@ -97,8 +111,8 @@ Updated November 16, 2026: .214 per-client RM graphics-channel candidate impleme
 
 ## Latest Run & Artifacts
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.213-20261115-211531.log`
-- **Latest hardware-tested version**: `v3.0.0.213`
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.214-20261116-103335.log`
+- **Latest hardware-tested version**: `v3.0.0.214`
 - **Current state**: `.208` sends `NO_MAP | NONCONTIGUOUS | VIDMEM` (`0x40000210`) for FB page-list registration. Hardware accepted the registration and the isolated P2MF transfer passed.
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
 
