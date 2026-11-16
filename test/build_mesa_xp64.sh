@@ -156,3 +156,10 @@ echo "Built XP x64 Mesa WGL ICD ($MESA_GALLIUM_DRIVERS): $ROOT/dist_full/nvxogl6
 echo "Built direct Mesa WGL diagnostic frontend: $ROOT/dist_full/nvxmesa.dll"
 echo "Imported DLLs:"
 printf '%s\n' "$imports"
+
+# Record the exact external patch inputs alongside the packaged binary.
+{
+    git -C "$ROOT/mesa" rev-parse HEAD
+    sha256sum "$ROOT"/mesa_patches/*.patch
+    sha256sum "$ROOT/dist_full/nvxogl64.dll"
+} > "$ROOT/dist_full/mesa-build-manifest.txt"

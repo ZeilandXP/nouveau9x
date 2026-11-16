@@ -17,22 +17,26 @@ static int
 run_probe(HDC hdc, int gart)
 {
    NVX_WINSYS_DEVICE device;
-   NVX_3D_ALLOC_BUFFER request, target;
+   NVX_3D_ALLOC_BUFFER request, target, spacerRequest, spacer;
    NVX_3D_BATCH_HEADER header;
    NVX_3D_BUFFER_REFERENCE reference;
-   uint32_t words[14];
+   uint32_t words[172];
    uint8_t batch[sizeof(header) + sizeof(reference) + sizeof(words)];
-   uint32_t result[4] = {0, 0, 0, 0};
+   uint32_t expected[162], result[162];
    uint64_t fence = 0;
-   uint32_t n = 0;
+   uint32_t n = 0, dataDwords = gart ? 4U : 162U;
+   uint32_t targetOffset = gart ? 0U : 0x4c8U;
+   uint32_t i;
    int submitted = 0, ok = 0;
-   const uint32_t expected[4] = {
-      0x4e565831U, 0x504d4632U, 0x13579bdfU, 0x2468ace0U
-   };
+
+   for (i = 0; i < dataDwords; ++i)
+      expected[i] = 0x4e565831U ^ (i * 0x01010101U);
 
    memset(&device, 0, sizeof(device));
    memset(&request, 0, sizeof(request));
    memset(&target, 0, sizeof(target));
+   memset(&spacerRequest, 0, sizeof(spacerRequest));
+   memset(&spacer, 0, sizeof(spacer));
    if (!NvxWinsysInitHdc(&device, hdc)) {
       puts("NVX [P2MF-PROBE]: client init failed");
       return 0;
@@ -44,26 +48,42 @@ run_probe(HDC hdc, int gart)
    request.Size = sizeof(request);
    request.Version = NVX_3D_ABI_VERSION;
    request.Usage = gart ? NVX_3D_USAGE_GART_BUFFER : 0;
-   request.Bytes = NVX_3D_PAGE_BYTES;
-   request.Alignment = NVX_3D_PAGE_BYTES;
+   request.Bytes = gart ? NVX_3D_PAGE_BYTES : 4U * 1024U * 1024U;
+   request.Alignment = gart ? NVX_3D_PAGE_BYTES : 0x20000U;
    request.ClientToken = device.ClientToken;
+   if (!gart) {
+      /* The first free FB range in the current firmware layout starts at
+       * 0x02e20000. Skip 2 MiB so the probe target matches Mesa's first
+       * stalled 4 MiB destination BO at GPU VA 0x23020000. */
+      spacerRequest = request;
+      spacerRequest.Bytes = 2U * 1024U * 1024U;
+      if (!NvxWinsysAllocBuffer(&device, &spacerRequest, &spacer)) {
+         puts("NVX [P2MF-PROBE]: FB placement spacer allocation failed");
+         goto done;
+      }
+      printf("NVX [P2MF-PROBE]: placement spacer va=%08lx%08lx bytes=%u\n",
+             (unsigned long)(uint32_t)(spacer.GpuVa >> 32),
+             (unsigned long)(uint32_t)spacer.GpuVa, spacer.Bytes);
+   }
    if (!NvxWinsysAllocBuffer(&device, &request, &target)) {
       puts("NVX [P2MF-PROBE]: target BO allocation failed");
+      if (spacer.BufferId)
+         (void)NvxWinsysFreeBuffer(&device, spacer.BufferId);
       goto done;
    }
 
    words[n++] = PKT_INCR(1, 2, 0x0000); /* SET_OBJECT */
    words[n++] = device.NouveauObjectBindings[2].ClassEngineId;
    words[n++] = PKT_INCR(2, 2, 0x0188); /* OFFSET_OUT_UPPER/LOWER */
-   words[n++] = (uint32_t)(target.GpuVa >> 32);
-   words[n++] = (uint32_t)target.GpuVa;
+   words[n++] = (uint32_t)((target.GpuVa + targetOffset) >> 32);
+   words[n++] = (uint32_t)(target.GpuVa + targetOffset);
    words[n++] = PKT_INCR(2, 2, 0x0180); /* LINE_LENGTH_IN/LINE_COUNT */
-   words[n++] = sizeof(expected);
+   words[n++] = dataDwords * sizeof(expected[0]);
    words[n++] = 1;
-   words[n++] = PKT_ONEINCR(5, 2, 0x01b0); /* LAUNCH_DMA + inline words */
+   words[n++] = PKT_ONEINCR(1U + dataDwords, 2, 0x01b0);
    words[n++] = 0x00001001U; /* UPLOAD_EXEC; same packet as Mesa NVE4_P2MF */
-   memcpy(&words[n], expected, sizeof(expected));
-   n += 4;
+   memcpy(&words[n], expected, dataDwords * sizeof(expected[0]));
+   n += dataDwords;
 
    memset(&header, 0, sizeof(header));
    header.Size = sizeof(header);
@@ -79,10 +99,11 @@ run_probe(HDC hdc, int gart)
    memcpy(batch + sizeof(header) + sizeof(reference), words,
           n * sizeof(words[0]));
 
-   printf("NVX [P2MF-PROBE]: target=%s id=%lu va=%08lx%08lx bytes=%u classEngineId=%08lx\n",
+   printf("NVX [P2MF-PROBE]: target=%s id=%lu va=%08lx%08lx offset=%u uploadBytes=%u classEngineId=%08lx\n",
           gart ? "GART" : "FB", (unsigned long)target.BufferId,
           (unsigned long)(uint32_t)(target.GpuVa >> 32),
-          (unsigned long)(uint32_t)target.GpuVa, target.Bytes,
+          (unsigned long)(uint32_t)target.GpuVa, targetOffset,
+          (unsigned int)(dataDwords * sizeof(expected[0])),
           (unsigned long)device.NouveauObjectBindings[2].ClassEngineId);
    submitted = NvxWinsysSubmitBatch(&device, batch,
                                    sizeof(header) + sizeof(reference) +
@@ -91,9 +112,10 @@ run_probe(HDC hdc, int gart)
           submitted ? "completed" : "failed-or-timeout",
           (unsigned long)fence);
    if (submitted && NvxWinsysDownloadBuffer(&device, target.BufferId,
-            target.Bytes, 0, result, sizeof(result))) {
-      ok = memcmp(result, expected, sizeof(result)) == 0;
-      printf("NVX [P2MF-PROBE]: readback=%s values=%08lx,%08lx,%08lx,%08lx\n",
+            target.Bytes, targetOffset, result,
+            dataDwords * sizeof(result[0]))) {
+      ok = memcmp(result, expected, dataDwords * sizeof(result[0])) == 0;
+      printf("NVX [P2MF-PROBE]: readback=%s firstValues=%08lx,%08lx,%08lx,%08lx\n",
              ok ? "match" : "mismatch", (unsigned long)result[0],
              (unsigned long)result[1], (unsigned long)result[2],
              (unsigned long)result[3]);
@@ -105,6 +127,9 @@ run_probe(HDC hdc, int gart)
    if (target.BufferId && !NvxWinsysFreeBuffer(&device, target.BufferId))
       puts("NVX [P2MF-PROBE]: target BO cleanup failed");
    target.BufferId = 0;
+   if (spacer.BufferId && !NvxWinsysFreeBuffer(&device, spacer.BufferId))
+      puts("NVX [P2MF-PROBE]: placement spacer cleanup failed");
+   spacer.BufferId = 0;
 done:
    if (submitted)
       (void)NvxWinsysCloseClient(&device);
@@ -118,7 +143,7 @@ main(int argc, char **argv)
    HDC hdc;
    int gart, result;
    if (argc != 2 || (strcmp(argv[1], "gart") && strcmp(argv[1], "fb"))) {
-      puts("usage: nvx_p2mf_probe.exe gart|fb");
+      puts("usage: nvx_p2mf_probe.exe gart|fb (FB targets VA 0x23020000 with 648 bytes at offset 0x4c8)");
       return 2;
    }
    gart = strcmp(argv[1], "gart") == 0;

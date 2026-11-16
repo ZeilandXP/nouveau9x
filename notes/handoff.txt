@@ -1,12 +1,25 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026 after the GART P2MF fence/readback passed (`v3.0.0.203`); latest hardware log is `test_logs/v3.0.0.203-20261115-190549.log`.
+Updated November 15, 2026 after `.208` changed the FB page-list flags to OpenRM's video-memory values and passed the exact-address FB P2MF probe on hardware. Full OpenGL still does not complete. Latest hardware log: `test_logs/v3.0.0.208-20261115-195047.log`.
+
+## Consolidated .209 candidate (single hardware run, then pause)
+
+- Restores upstream Ampere copy selection by excluding patch 0031 (legacy Fermi M2MF methods on the I2M subchannel).
+- Removes the extra WAIT_FOR_IDLE before the miniport completion semaphore; retains release-after-writes completion.
+- Rejects takeover of an owned channel and quarantines unresolved timed-out channels until teardown. Channel recreation/per-client hardware contexts remain unfinished.
+- Rebuilds Mesa and records patch hashes, upstream revision and DLL hash in dist_full/mesa-build-manifest.txt.
+- Audit correction: OpenRM g_kern_bus_nvoc.c selects a no-op PCIe doorbell flush on GA104; the extra flush implementation is GH100-only. Do not treat that as a confirmed missing GA104 operation.
+- Remaining differences: external XP page tables, fixed VRAM allocator, class translation, WGL resource-layout/presentation patches, shared hardware channel lifetime and synchronous submission. This candidate does not claim complete OpenRM host integration.
+- One .209 VFIO run: host tests, fresh Mesa/driver build and XP import audit passed. Nouveau first batch still stalls at PB_GET +0x260 (dword 0x98), inside the 648-byte upload to 0x230204c8. Channel quarantine prevents the subsequent queue of timeout submissions. Firmware assertions still rise from 1 to 3. Gears reports one iteration in 10 seconds; GPU frame completion remains unproven. Later cube uses GDI Generic and reports OPENGL_RESULT SOFTWARE; this is not hardware success.
+- Final .209 result: isolated FB P2MF PASS, built-in GR triangle/green-pixel/semaphore PASS, full suite exit 1 because OPENGL_RESULT SOFTWARE. Guest completed the 180-second session and shut down. Paused after exactly one hardware run; no second revision or boot.
+- Current log: test_logs/v3.0.0.209-20261115-201026.log. Package: dist_full/. The manifest inventories all patch files; the active application list is test/apply_mesa_xp_patches.sh and excludes 0031.
+- Next investigation when resumed: replay both uploads and the intervening copy/state packets from the actual first Mesa batch, using a fresh channel. Compare A040/A140 method semantics and CE-to-I2M ordering. Full channel recreation and resource-kind/presentation cleanup remain pending.
 
 ## Latest Run & Artifacts
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.203-20261115-190549.log`
-- **Latest hardware-tested version**: `v3.0.0.203`
-- **Current candidate**: `.204` will test P2MF writes into a registered OpenRM FB BO.
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.209-20261115-201026.log`
+- **Latest hardware-tested version**: `v3.0.0.209`
+- **Current state**: `.208` sends `NO_MAP | NONCONTIGUOUS | VIDMEM` (`0x40000210`) for FB page-list registration. Hardware accepted the registration and the isolated P2MF transfer passed.
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
 
 ---
@@ -140,7 +153,7 @@ The regular Nouveau path still stalls at PB_GET `pushVa + 0x480` (dword `0x120`)
 ## Current Implementation Tested (v3.0.0.203)
 
 - Ordinary Nouveau VRAM BOs now register their FB page list with OpenRM via RPC function 4 (`ALLOC_MEMORY`), class `NV01_MEMORY_LIST_FBMEM` (`0x82`), using the `rpc_alloc_memory_v13_01` payload verified against the pinned OpenRM 535 generated structure and implementation. The BO GPU VA remains in the existing GSP-installed VRAM aperture; frees deregister the page-list object with RPC function 10.
-- `MAP_MEMORY_DMA` and `NV01_MEMORY_LOCAL_USER` are no longer used for these BOs: the `.198` hardware log showed the local-user class is unsupported, and this GSP build reports map-memory-dma as invalid.
+- `MAP_MEMORY_DMA` and `NV01_MEMORY_LOCAL_USER` are not used for these BOs: pinned OpenRM 535 source configures the GA104 GSP DMA-map hook as a stub, and `.198` also observed an invalid-function response. The FB page-list registration uses the supported `ALLOC_MEMORY` RPC.
 - Large page lists use device-owned RPC buffers and multi-record queue staging, avoiding a large kernel stack allocation. Range selection checks the current free FB heap and overlaps with live BOs.
 - The Gallium/Mesa GEM interface and GART-backed system-memory path are unchanged. Special depth BOs retain their legacy allocation/page-kind handling.
 - Host verification: `make -C src_driver check` passes; `make -C src_driver full` builds `nvxmp.sys` for XP x64.
@@ -177,32 +190,35 @@ The regular Nouveau path still stalls at PB_GET `pushVa + 0x480` (dword `0x120`)
 
 ---
 
-## Current Issues and Diagnostics (latest hardware run v3.0.0.203)
+## Current Issues and Diagnostics (latest hardware run v3.0.0.208)
 
-1. **GPU submissions stall before their release fence completes (confirmed in `.194`–`.197`)**:
-   - First logged failure is fence `0x3`, push buffer VA `0x15F90000`; later fences time out too. USERD GET remains at `4` while PUT advances, with no PGRAPH trap reported. The `.197` run reports one `wglgears` frame in 85 seconds.
+1. **GPU submissions stall before their release fence completes (still present in `.208`)**:
+   - PB_GET still stops at dword `0x120` in the first Mesa batch, USERD GET remains at `6` while PUT advances, and no PGRAPH trap is reported. `.208` reaches OpenGL renderer identification (`NV170`), completes the first cube draw submission up to `SwapBuffers`, but never emits `OPENGL_RESULT`; the full test exits with “hardware OpenGL was not proven.”
    - **Evidence in `.195`**: `nvx_drm_submit_pushbuf()` copied `device->device` into a stack-local `winsys`; `NvxWinsysSubmitBatch()` mutates its four-slot staging ring and last-fence fields on that copy. The adapter discarded the mutations at return, so later DRM submissions restarted at the same slot without seeing the recorded fence. The ring reuse guard in `nvx_winsys.c` therefore could not work across IOCTLs.
    - **`.196` candidate result**: Ring state persists across adapter calls and later requests use varying pushbuffer buffers, but the first hardware fence still times out. This change alone did not solve the stall.
    - **`.197` batch correlation**: The first failed kernel batch is the same `0x29bc`-byte Nouveau pushbuffer dump (10 BO references, `0xa6f` input dwords). PB_GET stops at dword `0x120` inside the `NVA040_LAUNCH_DMA` / `LOAD_INLINE_DATA` upload that starts at dword `0x97`; received and GPU-visible windows match, ruling out corruption in the copy to the GPU-visible pushbuffer.
    - **Packet validity check**: This P2MF sequence matches upstream `nve4_p2mf_push_linear()` in `mesa/src/gallium/drivers/nouveau/nvc0/nvc0_transfer.c`: destination `0x230204c8`, line length `0x288` bytes, one line, and an `EXEC` plus 162 inline data words. The destination is inside referenced VRAM BO `0x23020000` (4 MiB). The earlier upload targets `0x22e9f600`, inside referenced BO `0x22e20000` (512 KiB). The available evidence does not show a malformed packet length or out-of-range destination. It points to P2MF upload execution/backpressure or destination mapping/access, but does not prove which.
-   - **OpenRM divergence audit**: `NvxGspSubmitNvc0Batch()` packs GPFIFO GET/GET_HI/LENGTH compatibly with `channelFillGpFifo()` in `open-gpu-kernel-modules/src/nvidia/src/kernel/gpu/mem_mgr/channel_utils.c`; the log also shows PBDMA fetched the whole pushbuffer, so queue publication is not the leading cause. The larger divergence is memory ownership/mapping: `Nvx3dAllocateBuffer()` hands Nouveau offsets inside a driver-created whole-VRAM aperture, whose PTEs are built manually in `NvxGspMapScratch()`, while OpenRM maps each RM memory descriptor into a VASpace via its `dmaUpdateVASpace_HAL` path (`virt_mem_allocator_gm107.c`). Our software range validation does not prove P2MF write access to those manually mapped addresses. This is the strongest concrete divergence to test, not a confirmed root cause.
-   - **Next discriminating test**: Submit a minimal P2MF inline upload through the same Nouveau channel to a small GART-backed BO and to a VRAM BO, then read back each target and its fence. Compare with the already successful miniport C797 scratch upload, which exercises another class path. If GART succeeds and VRAM stalls, focus on RM/GPU-VA mapping and P2MF access for Nouveau VRAM allocations; if both stall, focus on P2MF object binding/classEngineID or upload setup. Avoid changing the upstream packet encoding without contrary evidence.
+   - **OpenRM FB metadata**: the driver's old flags (`0x40000010`) omitted the OS02 `VIDMEM` location. `.208` now sends `NO_MAP | NONCONTIGUOUS | VIDMEM` (`0x40000210`), matching OpenRM's conversion for a multi-page `NV01_MEMORY_LIST_FBMEM` request. The FB probe passed after this change. The GSP MAP_MEMORY_DMA hook is still stubbed on GA104, so XP must install the external page-table mapping; that OS layer cannot be identical to Linux's kernel mapping code.
+   - **P2MF FB controls**: `.205` passed four dwords at the base of a registered FB BO. `.206` passed 162 inline dwords (648 bytes) at offset `0x4c8`. `.207` matched Mesa's target VA `0x23020000` and BO size. `.208` repeated the FB probe with the corrected flags: target VA `0x23020000`, offset `0x4c8`, 648-byte upload, completed fence, matching readback, `[P2MF_BO_RESULT] PASS target=FB`.
+   - **Remaining submission difference**: `.208` still logs repeated `nouveau: kernel rejected pushbuf: Operation not permitted` after GPU submissions time out. The next step is to capture and compare Mesa's actual stalled P2MF packet/data and surrounding method sequence against the passing minimal probe, then isolate which preceding packet or resource reference makes the full stream stop. Do not change the known-passing FB aperture based only on the current timeout; avoid `MAP_MEMORY_DMA` on GA104 because its OpenRM HAL hook is a stub.
    - **Open-module comparison**: The checked-out `open-gpu-kernel-modules` submodule is pinned at `535.113.01` (`f59818b`). `src/nvidia/src/kernel/gpu/mem_mgr/channel_utils.c:326` shows the host FIFO ordering: write GPFIFO entry, flush write-combine buffer, publish USERD GPPut, flush again, perform BAR0 PCIe flush, then ring the configured doorbell. `src/nvidia/src/kernel/gpu/fifo/arch/ampere/kernel_fifo_ga100.c:146` dispatches GSP systems to an internal doorbell helper. Our miniport already gets PBDMA fetch progress, so don’t replace the working Linux/Nouveau winsys with a second ring implementation; compare ordering only if the `.197` command-level evidence points away from a bad packet.
 
-2. **Mesa reports `kernel rejected pushbuf: Operation not permitted` (confirmed in `.194`)**:
+2. **Mesa reports `kernel rejected pushbuf: Operation not permitted` (confirmed in `.208`)**:
    - The ICD and Nouveau screen initialize and renderer reports `NV170`; the pushbuf path reaches miniport submission, but Mesa's error text alone does not identify which validation or submission boundary returned failure.
-   - **Evidence in `.195`**: `ERROR_NOT_READY` is returned after GPU fence wait timeout, not a batch-validation rejection. The detailed `NVC0-BATCH` and PBDMA diagnostics are in `src_driver/nvxmp.c` and `src_driver/nvx_gsp.c`.
+   - **Evidence in `.208`**: the miniport log shows `ERROR_NOT_READY` after a GPU fence wait timeout, not an initial ABI rejection. The detailed `NVC0-BATCH` and PBDMA diagnostics are in `src_driver/nvxmp.c` and `src_driver/nvx_gsp.c`.
 
-3. **Firmware assertion count increases during 3D startup (confirmed in `.194`)**:
-   - Counter rises from 1 during startup to 3 as graphics work begins. No accompanying PGRAPH trap was captured, so the cause is not established. Compare `.195` assertion/RC-fault messages with the first failing batch before changing channel setup.
+3. **Firmware assertion count increases during 3D startup (confirmed in `.208`)**:
+   - Counter rises from 1 during startup to 3 as graphics work begins. No accompanying PGRAPH trap was captured, so the cause is not established. Compare assertion/RC-fault messages with the first failing batch before changing channel setup.
 
-4. **VRAM allocation pressure (observed in `.194`, causality unknown)**:
+4. **VRAM allocation pressure (observed in `.208`, causality unknown)**:
    - Two 64 MiB VRAM allocations fail while GART allocations continue. Track against the first submission timeout, but current evidence does not show this caused it.
 
 ### Next test procedure
 
-- Run `.204` with `NVX_NVC0_P2MF_PROBE_TARGET=fb` to determine whether P2MF can write/read an OpenRM-registered FB BO. This directly tests the same write destination class as the stalled Mesa upload.
-- If the FB probe stalls while GART passed `.203`, replace the current locally constructed VRAM aperture/PTE mapping with OpenRM's normal memory descriptor plus GPU-VA DMA mapping path. Audit why `MAP_MEMORY_DMA` returned `INVALID_FUNCTION` (RPC function selection, payload framing, client/device/VA-space handles, and supported function version) before attempting another local PTE workaround. Reuse OpenRM `ALLOC_MEMORY`, `MAP_MEMORY_DMA`/`UNMAP_MEMORY_DMA`, memory list classes, and VA-space controls where GSP RPC exposes them; use direct RPC shims to those RM functions instead of reimplementing PTE setup.
-- If FB also passes, compare the full batch's BO references and method ordering against the successful minimal batch; channel binding, P2MF encoding, GART write, fence, and readback are then all confirmed.
+- `.205` outcome: guest log records `submit=completed`, matching readback `4e565831,504d4632,13579bdf,2468ace0`, and `[P2MF_BO_RESULT] PASS target=FB`.
+- `.206` outcome: guest log records target VA `0x22e20000`, 648-byte upload at `0x4c8`, completed fence, matching readback, and `[P2MF_BO_RESULT] PASS target=FB`.
+- `.208` host tests, XP x64 package/import audit, and build pass. Hardware FB P2MF probe passes with the corrected flags. The full suite still fails its OpenGL success criterion: the first cube draw reaches swap, but there is no completed frame result.
+- Continue using OpenRM's supported FB `ALLOC_MEMORY` page-list object and RM VASpace/TLB controls. Do not attempt `MAP_MEMORY_DMA` or `ALLOC_VIRTMEM` RPCs on GA104: pinned OpenRM 535 source configures these hooks as stubs. The remaining XP-specific mapping work belongs in the external page-table setup, aligned with upstream Nouveau's local VASpace management.
+- Compare the full Mesa batch's failing P2MF upload and preceding methods/BO references against the passing minimal upload; the FB destination, VA, BO size, upload length, fence, and readback now pass as isolated controls.
 - `.203`'s successful P2MF GART probe and the built-in GR scratch probe are passing controls; continue requiring completed NVC0 draw fences, cube readback, `OPENGL_RESULT` pass, and multiple wglgears frames before calling hardware OpenGL operational.
 - Require completed NVC0 draw fences, cube render-target readback, `OPENGL_RESULT` pass, and multiple successful wglgears frames before calling hardware OpenGL operational. `.198` rendered one workload at 55.2 FPS but failed later tests; `.199` exposed the return-payload validation bug; `.200` fixes registration but still stalls; `.201` verifies the corrected teardown field and reproduces the same stall.

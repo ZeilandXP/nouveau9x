@@ -277,8 +277,14 @@ EOF
 unix2dos "$NVX_MOUNT/test_accel/run_test.bat" 2>/dev/null || true
 rm -f "$NVX_MOUNT/test_accel/p2mf_probe_gart.flag" "$NVX_MOUNT/test_accel/p2mf_probe_fb.flag"
 case "${NVX_NVC0_P2MF_PROBE_TARGET:-}" in
-    gart) : > "$NVX_MOUNT/test_accel/p2mf_probe_gart.flag" ;;
-    fb) : > "$NVX_MOUNT/test_accel/p2mf_probe_fb.flag" ;;
+    gart)
+        : > "$NVX_MOUNT/test_accel/p2mf_probe_gart.flag"
+        echo "[TEST-PACKAGE] isolated P2MF probe target=GART enabled"
+        ;;
+    fb)
+        : > "$NVX_MOUNT/test_accel/p2mf_probe_fb.flag"
+        echo "[TEST-PACKAGE] isolated P2MF probe target=FB enabled"
+        ;;
 esac
 NVX_STARTUP="$(find "$NVX_MOUNT" -maxdepth 5 -type d -ipath '*/programs/startup' -print -quit)"
 if [ -n "$NVX_STARTUP" ]; then

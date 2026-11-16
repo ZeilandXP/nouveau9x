@@ -526,8 +526,10 @@ static BOOLEAN NvxGspControl(PNVX_DEVICE_EXTENSION dev,ULONG object,ULONG cmd,
 }
 
 /* Register framebuffer pages with OpenRM using the same ALLOC_MEMORY
-   rpc_alloc_memory_v13_01 path as upstream. This GSP rejects local-user
-   allocation and MAP_MEMORY_DMA; GPU VAs come from our preinstalled aperture. */
+   rpc_alloc_memory_v13_01 path as upstream. On GA104, OpenRM's checked-in GSP
+   HAL deliberately stubs MAP_MEMORY_DMA and ALLOC_VIRTMEM, so the OS-specific
+   client side still installs the VA mapping in the shared RM VASpace. XP uses
+   its external page-table aperture for that part. */
 BOOLEAN NvxGspAllocateVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
                              ULONG64 physicalOffset,ULONG bytes,
                              ULONG alignment,ULONG64 *gpuVa)
@@ -556,9 +558,11 @@ BOOLEAN NvxGspAllocateVramBo(PVOID HwDeviceExtension,ULONG memoryHandle,
     payload[1]=dev->GspDeviceHandle;
     payload[2]=memoryHandle;
     payload[3]=0x82; /* NV01_MEMORY_LIST_FBMEM */
-    /* Match OpenRM's GSP page-list registration flags: NO_MAP and a supplied
-       page list. The list itself is in framebuffer PFNs below. */
-    payload[4]=0x40000010U;
+    /* Match OpenRM's NVOS02 conversion for an FB page-list object:
+       NO_MAP | NONCONTIGUOUS | VIDMEM. Even though this allocator chooses
+       consecutive VRAM PFNs, MEMORY_LIST_FBMEM consumes the supplied PFN
+       array as a page list and OpenRM rejects CONTIGUOUS with pageCount > 1. */
+    payload[4]=0x40000210U;
     payload[8]=bytes; /* 64-bit aligned length */
     payload[10]=pageCount;
     payload[12]=pageCount<<16; /* pte_desc: IDR_NONE and page count */
@@ -915,8 +919,9 @@ static BOOLEAN NvxGspAllocateGrBacking(PNVX_DEVICE_EXTENSION dev)
 
 static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
 {
-    /* GSP rejects MAP_MEMORY_DMA (v75: INVALID_FUNCTION). Use externally
-       owned Pascal+ page tables and DMA_SET_PAGE_DIRECTORY, as Nouveau r535.
+    /* OpenRM's GA104 GSP HAL leaves MAP_MEMORY_DMA and ALLOC_VIRTMEM stubbed.
+       Follow Nouveau r535's external-VASpace setup: install the page directory
+       with RM, then populate OS-owned Pascal+ page tables and invalidate TLBs.
        The small-page tree maps scratch at 0x10000000; an LPT pool maps the
        firmware-reported free VRAM window at 0x20000000. */
     ULONG setDirectory[8]={0};
@@ -3557,7 +3562,7 @@ BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
     return FALSE;
 }
 
-static BOOLEAN NvxGspFindNvc0Draw(const ULONG *dwords,ULONG dwordCount,
+static BOOLEAN NvxGspFindNvc0Draw(const uint32_t *dwords,ULONG dwordCount,
     ULONG *primitive,ULONG *vertexStart,ULONG *vertexCount)
 {
     ULONG cursor=0,found=0;
@@ -3602,7 +3607,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
     volatile ULONG *userd,*fence;
     volatile ULONG64 *fifo;
     PULONG push;
-    ULONG put,wait,tailCount=7U,pushBytesNeeded,totalDwords,i;
+    ULONG put,wait,tailCount=5U,pushBytesNeeded,totalDwords,i;
     ULONG64 fenceVa,pushVa,fifoEntry;
     if(!dev||!nvc0Dwords||!dwordCount||dwordCount>NVX_3D_MAX_PUSH_DWORDS||
        !pushVirtual||!pushGpuVa||!pushBytes||!dev->GspInitialized||
@@ -3631,15 +3636,14 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
     VideoPortMoveMemory(push,(PVOID)nvc0Dwords,
                         dwordCount*sizeof(ULONG));
     __sync_synchronize();
-    push[dwordCount+0]=(NVC56F_DMA_INCR_OPCODE_VALUE<<29)|(1U<<16)|
-            (NVC797_WAIT_FOR_IDLE>>2);
-    push[dwordCount+1]=0U;
-    push[dwordCount+2]=(NVC56F_DMA_INCR_OPCODE_VALUE<<29)|(4U<<16)|
+    /* A release after preceding writes supplies completion without forcing
+       a global GR idle before every submitted Mesa batch. */
+    push[dwordCount+0]=(NVC56F_DMA_INCR_OPCODE_VALUE<<29)|(4U<<16)|
             (NVC797_SET_REPORT_SEMAPHORE_A>>2);
-    push[dwordCount+3]=(ULONG)(fenceVa>>32);
-    push[dwordCount+4]=(ULONG)fenceVa;
-    push[dwordCount+5]=(ULONG)fenceValue;
-    push[dwordCount+6]=DRF_DEF(C797,_SET_REPORT_SEMAPHORE_D,_OPERATION,_RELEASE)|
+    push[dwordCount+1]=(ULONG)(fenceVa>>32);
+    push[dwordCount+2]=(ULONG)fenceVa;
+    push[dwordCount+3]=(ULONG)fenceValue;
+    push[dwordCount+4]=DRF_DEF(C797,_SET_REPORT_SEMAPHORE_D,_OPERATION,_RELEASE)|
             DRF_DEF(C797,_SET_REPORT_SEMAPHORE_D,_RELEASE,_AFTER_ALL_PRECEEDING_WRITES_COMPLETE)|
             DRF_DEF(C797,_SET_REPORT_SEMAPHORE_D,_PIPELINE_LOCATION,_ALL)|
             DRF_DEF(C797,_SET_REPORT_SEMAPHORE_D,_STRUCTURE_SIZE,_ONE_WORD);
@@ -3763,7 +3767,8 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
         dev->GspGraphicsChannelFaulted=TRUE;
         LogStr("NVX [NVC0-BATCH]: verified hardware fault; channel marked faulted\n");
     } else {
-        LogStr("NVX [NVC0-BATCH]: timeout without PGRAPH error; channel preserved\n");
+        dev->GspGraphicsChannelFaulted=TRUE;
+        LogStr("NVX [NVC0-BATCH]: timeout; channel quarantined until teardown\n");
     }
     LogStr("NVX [NVC0-BATCH]: submission did not complete; fence=");
     LogHex(fenceValue);LogStr(" observed=");LogHex(fence[0]);LogStr("\n");

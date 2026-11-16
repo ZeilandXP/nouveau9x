@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.203"
+NVX_TEST_VERSION="3.0.0.209"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
 NVX_TEST_FLAGS=()
@@ -188,6 +188,9 @@ if [ "${NVX_RAPID_3D:-0}" = "1" ]; then
     echo "==> Guest test mode: focused 3D resource transfer, batch validation, 64x16 clear, full-size color matrix, fences, and readback cases"
 fi
 echo "==> Updating the offline XP guest with dist_full"
+if [ -n "${NVX_NVC0_P2MF_PROBE_TARGET:-}" ]; then
+    echo "==> Guest diagnostic enabled: same-channel P2MF target=$NVX_NVC0_P2MF_PROBE_TARGET"
+fi
 "$NVX_ROOT/test/update_disk_driver_user.sh" full
 
 if [ ! -e /dev/vfio/vfio ]; then

@@ -2276,9 +2276,7 @@ BOOLEAN NTAPI HwVidStartIO(
             }
             if(engine->Nvx3dChannelOwnerToken&&
                engine->Nvx3dChannelOwnerToken!=request.ClientToken) {
-                LogStr("NVX [3D-CHANNEL]: reassigning channel owner to new client token=");
-                LogHex(request.ClientToken);
-                LogStr("\n");
+                Nvx3dUnlockBuffers();status=ERROR_BUSY;break;
             }
             engine->Nvx3dChannelOwnerToken=request.ClientToken;
             engine->Nvx3dChannelBoundToken=0;
