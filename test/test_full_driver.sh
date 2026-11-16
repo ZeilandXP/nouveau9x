@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.201"
+NVX_TEST_VERSION="3.0.0.203"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
 NVX_TEST_FLAGS=()
@@ -17,6 +17,24 @@ if [ "${NVX_MESA_APPLOCAL:-0}" = "1" ]; then
 fi
 if [ "${NVX_GR_SUBMISSION_PROBE:-0}" = "1" ]; then
     NVX_TEST_FLAGS+=("-DNVX_REQUIRE_3D_ABI=1")
+fi
+if [ -n "${NVX_NVC0_P2MF_PROBE_TARGET:-}" ]; then
+    case "$NVX_NVC0_P2MF_PROBE_TARGET" in
+        gart|fb) ;;
+        *) echo "NVX_NVC0_P2MF_PROBE_TARGET must be gart or fb." >&2; exit 1 ;;
+    esac
+    echo "==> Building isolated same-channel P2MF BO probe target=$NVX_NVC0_P2MF_PROBE_TARGET"
+    x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -static-libgcc \
+        -D_WIN32_WINNT=0x0502 -DWINVER=0x0502 \
+        -I"$NVX_ROOT/src_driver" -I"$NVX_ROOT/mesa_patches" \
+        "$NVX_ROOT/test/nvx_p2mf_probe.c" \
+        "$NVX_ROOT/mesa_patches/nvx_winsys.c" \
+        "$NVX_ROOT/mesa_patches/nvx_winsys_win32.c" \
+        "$NVX_ROOT/mesa_patches/nvx_nouveau_bo.c" \
+        "$NVX_ROOT/mesa_patches/nvx_nouveau_pushbuf.c" \
+        -lgdi32 -luser32 -o "$NVX_ROOT/test/nvx_p2mf_probe.exe"
+else
+    rm -f "$NVX_ROOT/test/nvx_p2mf_probe.exe"
 fi
 if [ "${NVX_MESA_GALLIUM_BRIDGE:-0}" = "1" ]; then
     NVX_MESA_TEST_FLAGS+=("-DNVX_MESA_GALLIUM_BRIDGE_PROBE=1" "-DNVX_MESA_ZF32_DIAGNOSTIC=1")

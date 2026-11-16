@@ -1,12 +1,12 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026 for OpenRM FB page registration (`v3.0.0.201`); latest hardware log is `test_logs/v3.0.0.201-20261115-183531.log`.
+Updated November 15, 2026 after the GART P2MF fence/readback passed (`v3.0.0.203`); latest hardware log is `test_logs/v3.0.0.203-20261115-190549.log`.
 
 ## Latest Run & Artifacts
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.201-20261115-183531.log`
-- **Latest hardware-tested version**: `v3.0.0.201`
-- **Current candidate**: none; `.201` was built and hardware-tested, but GPU submission still fails.
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.203-20261115-190549.log`
+- **Latest hardware-tested version**: `v3.0.0.203`
+- **Current candidate**: `.204` will test P2MF writes into a registered OpenRM FB BO.
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
 
 ---
@@ -94,6 +94,7 @@ The NVX driver stack enables hardware-accelerated 2D and 3D graphics on Windows 
 ### 1. Kernel-Mode Miniport Driver (`src_driver/`)
 - **`src_driver/nvxmp.c`**: Core driver entry, XDDM callbacks (`HwVidInitialize`, `HwVidStartIO`), 3D IOCTL dispatchers, buffer lifecycle management (`Nvx3dAllocBuffer`, `Nvx3dFreeBuffer`), GART page reclamation, and batch submission.
 - **`src_driver/nvx_gsp.c`**: Host-GSP communication, command message queue (MSGQ), channel allocation, pushbuffer kick-off (`NvxGspSubmitNvc0Batch`), and release fence tracking.
+- **`test/nvx_p2mf_probe.c`**: Optional XP x64 in-channel P2MF BO diagnostic. Run the full test script with `NVX_NVC0_P2MF_PROBE_TARGET=gart` or `fb` to upload four dwords and check the submission fence and CE readback.
 - **`src_driver/nvx_disp_rpc.c`**: Dual-head display RPC controls, scanout configuration, EDID parsing, and secondary head management (`NvxNativeSetSecondaryScanout`).
 - **`src_driver/nvx_gr_context.c` / `nvx_gr_context.h`**: GART heap management (`NvxGartReserve`, `NvxGartRelease`) and GPU 3D graphics context structures.
 - **`src_driver/nvx_3d_abi.h`**: Public user/kernel interface definition: IOCTL codes (`IOCTL_NVX_3D_*`), buffer structures, batch headers, and kernel pushbuffer validator logic (`Nvx3dValidateNvc0ObjectBindingsEx`).
@@ -122,11 +123,13 @@ The NVX driver stack enables hardware-accelerated 2D and 3D graphics on Windows 
 
 ---
 
-## Current Status (latest hardware test: v3.0.0.201)
+## Current Status (latest hardware test: v3.0.0.203)
 
-OpenRM framebuffer page registration now follows the supported `ALLOC_MEMORY` RPC path. `.201` confirms the 4 MiB FB BO registration succeeds, and a small BO registers and deregisters successfully. The driver package passes host tests and builds for XP x64.
+OpenRM framebuffer page registration now follows the supported `ALLOC_MEMORY` RPC path. `.201` confirms the 4 MiB FB BO registration succeeds, and a small BO registers and deregisters successfully. `.202` adds an isolated test app for submitting the Mesa NVE4 P2MF upload into a client BO and checking its fence/readback. The driver package passes host tests and builds for XP x64.
 
-Rendering is still blocked. The first Nouveau batch stalls at PB_GET `pushVa + 0x480` (dword `0x120`), USERD GET remains 4, and its release fence never completes. The firmware assertion count rises from 1 to 3. wglgears reports one frame in 83 seconds (0.012 FPS); the suite reports “hardware OpenGL was not proven.” The independent C797 triangle and 2D success markers do not appear because the Nouveau workload stalls first. FB registration therefore fixes RM page ownership but not the current NVC0 submission failure.
+Rendering is still blocked, but `.203` proves the P2MF channel path can write a GART BO: `NVX [P2MF-PROBE]` reports `submit=completed fence=2`, and CE readback matches all four uploaded dwords. This is a real hardware result, not just command validation. `.202` had rejected the same probe before queueing because `GspGraphicsUserAllocReady` remained false for GART-only BOs (`ready=1`, `fault=0`, `mmu=0`, `userAlloc=0`); `.203` sets that flag only after a GART BO is fully mapped and committed.
+
+The regular Nouveau path still stalls at PB_GET `pushVa + 0x480` (dword `0x120`), USERD GET remains 6, and its release fence never completes. Firmware assertion count rises from 1 to 3. wglgears reports one frame in 84 seconds (0.012 FPS). `.203` also includes the successful built-in `GR RESULT` and 2D markers. The isolated GART test establishes that P2MF object binding, packet encoding, GPFIFO submission, fences, and CE readback work for system-memory BOs. The leading remaining difference is the destination: Nouveau's first upload writes into a VRAM BO. Hardware OpenGL remains unproven.
 
 - `.198`: used unsupported `NV01_MEMORY_LOCAL_USER`; GSP rejected allocation. One separate GL workload reached 55.2 FPS, but later tests failed.
 - `.199`: function 4 `ALLOC_MEMORY` returned success; caller incorrectly expected an echoed parameter payload and discarded the BOs.
@@ -134,7 +137,7 @@ Rendering is still blocked. The first Nouveau batch stalls at PB_GET `pushVa + 0
 - Mesa submodule remains pinned and unmodified; XP customizations stay in `mesa_patches/`.
 ---
 
-## Current Implementation Tested (v3.0.0.201)
+## Current Implementation Tested (v3.0.0.203)
 
 - Ordinary Nouveau VRAM BOs now register their FB page list with OpenRM via RPC function 4 (`ALLOC_MEMORY`), class `NV01_MEMORY_LIST_FBMEM` (`0x82`), using the `rpc_alloc_memory_v13_01` payload verified against the pinned OpenRM 535 generated structure and implementation. The BO GPU VA remains in the existing GSP-installed VRAM aperture; frees deregister the page-list object with RPC function 10.
 - `MAP_MEMORY_DMA` and `NV01_MEMORY_LOCAL_USER` are no longer used for these BOs: the `.198` hardware log showed the local-user class is unsupported, and this GSP build reports map-memory-dma as invalid.
@@ -174,7 +177,7 @@ Rendering is still blocked. The first Nouveau batch stalls at PB_GET `pushVa + 0
 
 ---
 
-## Current Issues and Diagnostics (latest hardware run v3.0.0.201)
+## Current Issues and Diagnostics (latest hardware run v3.0.0.203)
 
 1. **GPU submissions stall before their release fence completes (confirmed in `.194`–`.197`)**:
    - First logged failure is fence `0x3`, push buffer VA `0x15F90000`; later fences time out too. USERD GET remains at `4` while PUT advances, with no PGRAPH trap reported. The `.197` run reports one `wglgears` frame in 85 seconds.
@@ -198,6 +201,8 @@ Rendering is still blocked. The first Nouveau batch stalls at PB_GET `pushVa + 0
 
 ### Next test procedure
 
-- `.201` confirms FB page registration and teardown work but leaves the batch stall unchanged. Compare the failing method stream, bound P2MF object, channel/runlist and instance state directly with upstream Nouveau and OpenRM 535.
-- Add a minimal in-channel P2MF test with one small registered FB BO and one GART BO, plus readback/fence checks, before running the full app suite. The current large Nouveau workload blocks on its first release fence and makes the full boot test slow.
+- Run `.204` with `NVX_NVC0_P2MF_PROBE_TARGET=fb` to determine whether P2MF can write/read an OpenRM-registered FB BO. This directly tests the same write destination class as the stalled Mesa upload.
+- If the FB probe stalls while GART passed `.203`, replace the current locally constructed VRAM aperture/PTE mapping with OpenRM's normal memory descriptor plus GPU-VA DMA mapping path. Audit why `MAP_MEMORY_DMA` returned `INVALID_FUNCTION` (RPC function selection, payload framing, client/device/VA-space handles, and supported function version) before attempting another local PTE workaround. Reuse OpenRM `ALLOC_MEMORY`, `MAP_MEMORY_DMA`/`UNMAP_MEMORY_DMA`, memory list classes, and VA-space controls where GSP RPC exposes them; use direct RPC shims to those RM functions instead of reimplementing PTE setup.
+- If FB also passes, compare the full batch's BO references and method ordering against the successful minimal batch; channel binding, P2MF encoding, GART write, fence, and readback are then all confirmed.
+- `.203`'s successful P2MF GART probe and the built-in GR scratch probe are passing controls; continue requiring completed NVC0 draw fences, cube readback, `OPENGL_RESULT` pass, and multiple wglgears frames before calling hardware OpenGL operational.
 - Require completed NVC0 draw fences, cube render-target readback, `OPENGL_RESULT` pass, and multiple successful wglgears frames before calling hardware OpenGL operational. `.198` rendered one workload at 55.2 FPS but failed later tests; `.199` exposed the return-payload validation bug; `.200` fixes registration but still stalls; `.201` verifies the corrected teardown field and reproduces the same stall.

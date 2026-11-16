@@ -140,6 +140,10 @@ if [ -f "$NVX_PACKAGE/test_gpu_accel.exe" ]; then
     mkdir -p "$NVX_MOUNT/test_accel"
     cp -v "$NVX_PACKAGE/test_gpu_accel.exe" "$NVX_MOUNT/test_accel/test_gpu_accel.exe"
 fi
+if [ -f "$NVX_ROOT/test/nvx_p2mf_probe.exe" ]; then
+    mkdir -p "$NVX_MOUNT/test_accel"
+    cp -v "$NVX_ROOT/test/nvx_p2mf_probe.exe" "$NVX_MOUNT/test_accel/nvx_p2mf_probe.exe"
+fi
 if [ -f "$NVX_ROOT/test/test_gpu_accel32.exe" ]; then
     mkdir -p "$NVX_MOUNT/test_accel/x86"
     cp -v "$NVX_ROOT/test/test_gpu_accel32.exe" "$NVX_MOUNT/test_accel/x86/test_gpu_accel32.exe"
@@ -235,6 +239,16 @@ cat << 'EOF' > "$NVX_MOUNT/test_accel/run_test.bat"
 @echo off
 cd /d C:\test_accel
 echo [TEST] Starting Antigravity GPU Accel Suite... > C:\test_accel.log
+if exist C:\test_accel\p2mf_probe_gart.flag (
+    echo [TEST] Isolated GART P2MF probe... >> C:\test_accel.log
+    nvx_p2mf_probe.exe gart >> C:\test_accel.log 2>&1
+    if errorlevel 1 (echo [TEST] GART P2MF probe: FAIL >> C:\test_accel.log) else (echo [TEST] GART P2MF probe: PASS >> C:\test_accel.log)
+)
+if exist C:\test_accel\p2mf_probe_fb.flag (
+    echo [TEST] Isolated FB P2MF probe... >> C:\test_accel.log
+    nvx_p2mf_probe.exe fb >> C:\test_accel.log 2>&1
+    if errorlevel 1 (echo [TEST] FB P2MF probe: FAIL >> C:\test_accel.log) else (echo [TEST] FB P2MF probe: PASS >> C:\test_accel.log)
+)
 if exist C:\test_accel\wglgears.exe (
     cd /d C:\test_accel
     set GALLIUM_DRIVER=nouveau
@@ -261,6 +275,11 @@ echo [ALL_BENCHMARKS_FINISHED] Status: PASS >> C:\test_accel.log
 echo [TEST] ALL TESTS COMPLETE >> C:\test_accel.log
 EOF
 unix2dos "$NVX_MOUNT/test_accel/run_test.bat" 2>/dev/null || true
+rm -f "$NVX_MOUNT/test_accel/p2mf_probe_gart.flag" "$NVX_MOUNT/test_accel/p2mf_probe_fb.flag"
+case "${NVX_NVC0_P2MF_PROBE_TARGET:-}" in
+    gart) : > "$NVX_MOUNT/test_accel/p2mf_probe_gart.flag" ;;
+    fb) : > "$NVX_MOUNT/test_accel/p2mf_probe_fb.flag" ;;
+esac
 NVX_STARTUP="$(find "$NVX_MOUNT" -maxdepth 5 -type d -ipath '*/programs/startup' -print -quit)"
 if [ -n "$NVX_STARTUP" ]; then
     cp -v "$NVX_MOUNT/test_accel/run_test.bat" "$NVX_STARTUP/run_accel_test.bat"

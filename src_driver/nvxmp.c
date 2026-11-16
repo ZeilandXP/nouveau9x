@@ -1644,6 +1644,10 @@ static BOOLEAN Nvx3dAllocateGartBuffer(PNVX_DEVICE_EXTENSION engine,
     request->BufferId=id;
     request->GpuVa=gpuVa;
     Nvx3dUnlockBuffers();
+    /* Batch submission is ready once any user BO has a committed GPU
+       mapping. GART-backed Nouveau vertex/push buffers are sufficient; this
+       flag must not depend on a separate FB allocation having happened. */
+    engine->GspGraphicsUserAllocReady=TRUE;
     LogStr("NVX [GART]: committed client BO id=");LogHex(id);
     LogStr(" va=");LogHex(gpuVa);LogStr(" bytes=");LogHex(request->Bytes);
     LogStr(" pages=");LogHex(pageCount);LogStr("\n");
