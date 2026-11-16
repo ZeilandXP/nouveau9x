@@ -123,7 +123,7 @@ static BOOLEAN NvxGrVerifyClientQueue(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CH
     __sync_synchronize();
     c->Put=1;userd[0x8c/4]=1;
     __sync_synchronize();
-    if(nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,c->SubmitToken)!=NV_OK) {
+    if(nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,c->RunlistBase,c->HardwareChannelId,c->SubmitToken)!=NV_OK) {
         c->Faulted=TRUE;
         return FALSE;
     }

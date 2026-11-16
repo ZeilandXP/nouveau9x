@@ -48,7 +48,7 @@ NV_STATUS nvx_openrm_work_submit_token(NvU32,NvU32,NvU32 *);
 NV_STATUS nvx_openrm_context_init_entry(NvU32,NvU64,NvU64,NvBool,
     NV2080_CTRL_GPU_PROMOTE_CTX_BUFFER_ENTRY *,NvBool *);
 NvBool nvx_openrm_context_is_global(NvU32);
-NV_STATUS nvx_openrm_kick(void *,NvU32,NvU32);
+NV_STATUS nvx_openrm_kick(void *,NvU32,NvU32,NvU32,NvU32);
 NvBool nvx_openrm_channel_memory(NV_CHANNEL_ALLOC_PARAMS *,NvU64,NvU64,NvU64,NvU64);
 
 /* Delays and timing */

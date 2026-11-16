@@ -90,6 +90,31 @@ static void test_msgq_notification(void)
     assert(fake_bar0[0x110c00 / 4] == 0);
 }
 
+
+static void test_openrm_channel_memory(void)
+{
+    NV_CHANNEL_ALLOC_PARAMS channel={0};
+    assert(nvx_openrm_channel_memory(&channel,0x100000,0x200000,0x300000,0x400000));
+    assert(channel.instanceMem.base==0x100000 && channel.instanceMem.size==0x1000);
+    assert(channel.ramfcMem.base==0x100000 && channel.ramfcMem.size==0x200);
+    assert(channel.userdMem.base==0x200000 && channel.userdMem.size==0x200);
+    assert(channel.mthdbufMem.base==0x300000 && channel.mthdbufMem.size==0x2000);
+    assert(channel.errorNotifierMem.base==0x400000 && channel.errorNotifierMem.size==0x1000);
+    assert(channel.instanceMem.cacheAttrib==0 && channel.userdMem.cacheAttrib==0);
+    assert(channel.ramfcMem.cacheAttrib==0 && channel.errorNotifierMem.cacheAttrib==0);
+    assert(!nvx_openrm_channel_memory(&channel,0x100000,0x100100,0x300000,0x400000));
+}
+
+static void test_openrm_kick_order(void)
+{
+    static uint32_t fake_bar0[0x30100/4];
+    memset(fake_bar0,0,sizeof(fake_bar0));
+    assert(nvx_openrm_kick(fake_bar0,sizeof(fake_bar0),0x500,9,0x70009)==NV_OK);
+    assert(fake_bar0[0x30090/4]==0x70009);
+    assert(fake_bar0[(0x500+0x90)/4]==9);
+    assert(nvx_openrm_kick(fake_bar0,0x30090,0x500,9,0x70009)!=NV_OK);
+}
+
 static void test_falcon_idle(void)
 {
     uint32_t fake_bar0[0x200 / 4];
@@ -121,6 +146,8 @@ int main(void)
     test_memory_ops();
     test_msgq_notification();
     test_falcon_idle();
-    printf("OpenRM HAL shim tests passed: MMIO, memory, MsgQ doorbell, Falcon idle.\n");
+    test_openrm_channel_memory();
+    test_openrm_kick_order();
+    printf("OpenRM HAL shim tests passed: MMIO, descriptor layout/cache, kick order, MsgQ and Falcon idle.\n");
     return 0;
 }

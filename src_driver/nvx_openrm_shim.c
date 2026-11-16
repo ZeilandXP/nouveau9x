@@ -129,7 +129,7 @@ NvBool nvx_openrm_channel_memory(NV_CHANNEL_ALLOC_PARAMS *p,NvU64 instance,
     for(unsigned i=0;i<5;i++) {
         d[i]->base=base[i];d[i]->size=size[i];
         d[i]->addressSpace=1; /* ADDR_SYSMEM */
-        d[i]->cacheAttrib=NV_MEMORY_UNCACHED; /* common buffer CacheEnabled=FALSE */
+        d[i]->cacheAttrib=NV_MEMORY_CACHED; /* VideoPort common buffer is coherent. */
     }
     return NV_TRUE;
 }

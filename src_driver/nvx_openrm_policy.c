@@ -53,17 +53,21 @@ NvBool nvx_openrm_context_is_global(NvU32 id)
     return kgrctxGetGlobalContextBufferInternalId_IMPL(id,&internal)==NV_OK;
 }
 
-NV_STATUS nvx_openrm_kick(void *bar0,NvU32 barBytes,NvU32 token)
+NV_STATUS nvx_openrm_kick(void *bar0,NvU32 barBytes,NvU32 runlistBase,
+                           NvU32 channelId,NvU32 token)
 {
     OBJGPU gpu={bar0};
     KernelFifo fifo={0};
-    if(!bar0||barBytes<NV_VIRTUAL_FUNCTION_DOORBELL+sizeof(NvU32))
+    if(!bar0||barBytes<NV_VIRTUAL_FUNCTION_DOORBELL+sizeof(NvU32)||
+       runlistBase>barBytes-sizeof(NvU32)-0x90U||channelId>=4096U)
         return NV_ERR_INVALID_ARGUMENT;
-    /* DMA buffers use VideoPort common-buffer uncached mappings on x86.
-     * Publish FIFO/USERD stores before the host-RM usermode doorbell. The
-     * Hopper-only extra PCIe flush is not the GA104 HAL implementation. */
+    /* Preserve the proven XP/GSP sequence: publish queue memory, ring the
+     * host-RM doorbell, then notify the active runlist channel slot. */
     __sync_synchronize();
-    return kfifoUpdateUsermodeDoorbell_TU102(&gpu,&fifo,token,0);
+    if(kfifoUpdateUsermodeDoorbell_TU102(&gpu,&fifo,token,0)!=NV_OK)
+        return NV_ERR_INVALID_STATE;
+    nvx_reg_write32(bar0,runlistBase+0x90U,channelId);
+    return NV_OK;
 }
 
 NvU32 nvx_openrm_channel_internal_flags(void)

@@ -2321,7 +2321,7 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
     }
     dev->GspGraphicsRunlistBase=runlistBase;
     dev->GspGraphicsSubmitToken=token;
-    if(nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,token)!=NV_OK) return FALSE;
+    if(nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,runlistBase,2U,token)!=NV_OK) return FALSE;
     LogStr("NVX [GR]: rang channel doorbell token=");LogHex(token);LogStr(" chid=0x2\n");
     LogStr(reuseGlobalContext?
         "NVX [GR]: application channel I2M/fence probe; rasterizer state left to Mesa.\n":
@@ -3111,7 +3111,7 @@ static BOOLEAN NvxGspSubmitUserOperation(PVOID HwDeviceExtension,ULONG64 dstVa,
     dev->GspGraphicsGPPut=(put+1)%512;
     userd[0x8c/4]=dev->GspGraphicsGPPut;
     __sync_synchronize();
-    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,dev->GspGraphicsSubmitToken);
+    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,dev->GspGraphicsRunlistBase,2U,dev->GspGraphicsSubmitToken);
     dev->Nvx3dLastFence=fenceValue;
     /* A valid GPGet is always an index in the RM-allocated graphics ring.
        Treat an out-of-range value as a channel fault immediately; waiting
@@ -3565,7 +3565,7 @@ BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
     dev->Nvx3dLastFence=fenceValue;
     userd[0x8c/4]=dev->GspGraphicsGPPut;
     __sync_synchronize();
-    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,dev->GspGraphicsSubmitToken);
+    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,dev->GspGraphicsRunlistBase,2U,dev->GspGraphicsSubmitToken);
 
     for(wait=0;wait<10000;wait++) {
         if(fence[0]==(ULONG)fenceValue) {
@@ -3689,7 +3689,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     dev->Nvx3dLastFence=fenceValue;
     userd[0x8c/4]=channel->Put;
     __sync_synchronize();
-    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->SubmitToken);
+    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->RunlistBase,channel->HardwareChannelId,channel->SubmitToken);
     for(wait=0;wait<50000U;wait++) {
         if(fence[0]==(ULONG)fenceValue) {
             __sync_synchronize();
@@ -3727,7 +3727,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
         LogStr(" USERD_GET=");LogHex(userd[0x88/4]);
         LogStr(" USERD_PUT=");LogHex(userd[0x8c/4]);LogStr("\n");
         __sync_synchronize();
-        (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->SubmitToken);
+        (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->RunlistBase,channel->HardwareChannelId,channel->SubmitToken);
         for(wait=0;wait<50000U;wait++) {
             if(fence[0]==(ULONG)fenceValue) {
                 __sync_synchronize();
