@@ -81,9 +81,51 @@ the latest run). Hardware evidence:
    allocation after current reservations, so the shim retries it in GART.
    Keep that fallback truthful and validate other tiled or kinded large BOs
    cannot accidentally fall back to incompatible GART storage.
-6. **Normal allocation validation:** the host GEM test proves ABI propagation,
-   but the VFIO run's observed kinds are 3 and 6. Confirm color resources with
-   kind 0xfe are requested, mapped, used by rendering, and read back correctly.
+6. **Normal allocation validation:** kinds 3 and 6 match this upstream Mesa's
+   TU102+ storage selection (S8Z24 and generic color respectively). The earlier
+   expectation of color kind 0xfe was incorrect for Ampere. Still validate
+   resource addresses, tile mode, and transferred pixels against the actual BOs.
+
+### Code comparison: remaining drawing corruption
+
+Analysis only; no code change or new hardware run in this revision.
+
+- Strongest concrete semantic mismatch is CPU mapping/coherency. Upstream
+  `nouveau.c:nouveau_bo_map` always uses PROT_READ|PROT_WRITE and MAP_SHARED;
+  its `access` argument controls synchronization, not mapping permissions.
+  Upstream `nouveau_buffer.c` legitimately maps with access=0 then writes:
+  migration at lines 822-825, user upload at 892-895, scratch runout at 988.
+  XP patches 0012/0028 instead turn access=0 into MAP_READ. The submission
+  loop (`nvx_xf86drm.c:942`) skips shadows without WRITE, and
+  `NvxNouveauBoFlush` also returns success without uploading them. This can
+  submit stale/zero vertex or other buffer data despite a completed fence.
+  Existing vertex-address range uploads and the immediate-triangle special
+  case cover selected packet shapes; they do not establish general equivalence
+  to upstream shared mappings. This is a confirmed contract mismatch, but its
+  responsibility for the observed gears image still needs a targeted check.
+- The shadow design also uploads entire WRITE-mapped BOs before GPU reads.
+  Upstream maps the same backing directly; it does not overwrite an entire BO
+  from a separate CPU snapshot on submission. Mixed CPU/GPU-written or
+  suballocated BOs need dirty-range/ownership handling to avoid overwriting
+  valid GPU results. Simply marking every shadow writable is insufficient.
+- Target selection itself looks consistent: upstream
+  `nvc0_miptree.c:tu102_choose_tiled_storage_type` selects color kind 6 and
+  S8Z24 kind 3, and upstream `nvc0_state_validate.c` emits RT/ZETA addresses,
+  dimensions, format, and tile mode. Current logs show color kind 6.
+  OpenRM/UVM's Turing PTE builder confirms kind and physical-address fields,
+  but OpenRM does not generate Nouveau's OpenGL framebuffer/draw state.
+- XP patch 0020 bypasses upstream WGL end-of-frame waiting for Nouveau, even
+  though the WGL presenter now reads pixels on the CPU. Presentation still
+  calls the upstream texture transfer path, which synchronizes its readback;
+  therefore the bypass is an audit target, not proof of a race. Check the
+  staging copy fence and CPU shadow refresh before attributing missing parts
+  to presentation. The native color target has not been captured yet.
+- Next discrimination: compare CPU and GPU bytes for each actual gears
+  vertex/index/constant range immediately before consumption, including
+  access=0 and cached mappings. Then capture the rendered target through
+  Nouveau's tiled-to-linear transfer before StretchDIBits, and compare with
+  the displayed image. This distinguishes input corruption from depth/render
+  state and presentation without guessing from frame completion.
 
 ## Next steps
 
