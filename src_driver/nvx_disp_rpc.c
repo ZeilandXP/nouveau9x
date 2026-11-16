@@ -1014,8 +1014,11 @@ static BOOLEAN NvxGspCreateObjects(PNVX_DEVICE_EXTENSION dev,ULONG rxSequence)
     if(!NvxGspGetName(dev)) return FALSE;
     /* Connector and EDID discovery does not depend on CE execution. */
     NvxGspDiscoverDisplays(dev);
-    /* Private externally owned VASpace; page directory installed below. */
-    va.flags=8;
+    /* OpenRM's SET_PAGE_DIRECTORY contract requires shared-management mode
+       before relocating this VASpace to the XP-owned page directory. Keep
+       externally-owned enabled as well so the client supplies the leaf PTEs. */
+    va.flags=NV_VASPACE_ALLOCATION_FLAGS_SHARED_MANAGEMENT|
+             NV_VASPACE_ALLOCATION_FLAGS_IS_EXTERNALLY_OWNED;
     if(!NvxGspAlloc(dev,dev->GspDeviceHandle,0x90f10001,0x90f1,&va,sizeof(va))) return FALSE;
     dev->GspVaSpaceHandle=0x90f10001;
     LogStr("NVX [RM]: private GPU virtual address space allocated.\n");

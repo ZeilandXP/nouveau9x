@@ -944,7 +944,7 @@ static BOOLEAN NvxGspAllocateGrBacking(PNVX_DEVICE_EXTENSION dev)
 static BOOLEAN NvxGspMapScratch(PNVX_DEVICE_EXTENSION dev)
 {
     /* OpenRM's GA104 GSP HAL leaves MAP_MEMORY_DMA and ALLOC_VIRTMEM stubbed.
-       Follow Nouveau r535's external-VASpace setup: install the page directory
+       Follow Nouveau r535's shared, externally-managed VASpace setup: install the page directory
        with RM, then populate OS-owned Pascal+ page tables and invalidate TLBs.
        The small-page tree maps scratch at 0x10000000; an LPT pool maps the
        firmware-reported free VRAM window at 0x20000000. */
