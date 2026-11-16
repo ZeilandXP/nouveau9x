@@ -83,34 +83,57 @@ NvxTestExtEscape(HDC hdc, int escape, int input_bytes, LPCSTR input,
     if(escape==NVX_ESCAPE_3D_ALLOC && input &&
        input_bytes==(int)sizeof(NVX_3D_ALLOC_BUFFER)) {
         NVX_3D_ALLOC_BUFFER *request=(NVX_3D_ALLOC_BUFFER *)input;
-        request->ClientToken=NvxTestGetClientToken(hdc);
+        if(!request->ClientToken)
+            request->ClientToken=NvxTestGetClientToken(hdc);
         if(!request->ClientToken) return 0;
         if(++nvx_test_allocation_token==0) ++nvx_test_allocation_token;
         request->AllocationToken=nvx_test_allocation_token;
     } else if(escape==NVX_ESCAPE_3D_SUBMIT && input &&
               input_bytes>=(int)sizeof(NVX_3D_SUBMIT)) {
         NVX_3D_SUBMIT *request=(NVX_3D_SUBMIT *)input;
-        request->ClientToken=NvxTestGetClientToken(hdc);
+        if(!request->ClientToken)
+            request->ClientToken=NvxTestGetClientToken(hdc);
         if(!request->ClientToken) return 0;
         if(++nvx_test_request_token==0) ++nvx_test_request_token;
         request->RequestToken=nvx_test_request_token;
     } else if(escape==NVX_ESCAPE_3D_FREE && input &&
               input_bytes==(int)sizeof(NVX_3D_FREE_BUFFER)) {
         NVX_3D_FREE_BUFFER *request=(NVX_3D_FREE_BUFFER *)input;
-        request->ClientToken=NvxTestGetClientToken(hdc);
+        if(!request->ClientToken)
+            request->ClientToken=NvxTestGetClientToken(hdc);
     } else if(escape==NVX_ESCAPE_3D_UPLOAD && input &&
               input_bytes>=(int)sizeof(NVX_3D_UPLOAD_BUFFER)) {
         NVX_3D_UPLOAD_BUFFER *request=(NVX_3D_UPLOAD_BUFFER *)input;
-        request->ClientToken=NvxTestGetClientToken(hdc);
+        if(!request->ClientToken)
+            request->ClientToken=NvxTestGetClientToken(hdc);
     } else if(escape==NVX_ESCAPE_3D_DOWNLOAD && input &&
               input_bytes==(int)sizeof(NVX_3D_DOWNLOAD_BUFFER)) {
         NVX_3D_DOWNLOAD_BUFFER *request=(NVX_3D_DOWNLOAD_BUFFER *)input;
-        request->ClientToken=NvxTestGetClientToken(hdc);
+        if(!request->ClientToken)
+            request->ClientToken=NvxTestGetClientToken(hdc);
     }
     return ExtEscape(hdc,escape,input_bytes,input,output_bytes,output);
 }
 
 #define ExtEscape NvxTestExtEscape
+
+static int
+NvxTestOpenNouveauChannel(HDC hdc,uint64_t clientToken)
+{
+    NVX_3D_CHANNEL_LEASE request={0},result={0};
+    request.Size=sizeof(request);
+    request.Version=NVX_3D_ABI_VERSION;
+    request.Operation=NVX_3D_CHANNEL_OPEN;
+    request.ClientToken=clientToken;
+    return clientToken&&
+        ExtEscape(hdc,NVX_ESCAPE_3D_CHANNEL_LEASE,sizeof(request),
+                  (LPCSTR)&request,sizeof(result),(LPSTR)&result)&&
+        Nvx3dValidateChannelLease(&request,NVX_3D_CHANNEL_OPEN)&&
+        result.Size==sizeof(result)&&result.Version==NVX_3D_ABI_VERSION&&
+        result.Operation==NVX_3D_CHANNEL_OPEN&&
+        result.ClientToken==clientToken&&result.ChannelHandle&&
+        result.GraphicsObjectHandle&&result.ComputeObjectHandle;
+}
 
 static void DumpMesaBridgeTrace(void)
 {
@@ -3009,15 +3032,25 @@ static int TestNvc0ClearEscape(HDC hdc)
 
     LogMsg("-> Testing one validated 28-dword NVC0 full-target clear packet\n");
     if(!Nvx3dComputeColorSurfaceLayout(64,16,&layout)) return 0;
+#if defined(NVX_TEST_NOUVEAU_PUSHBUF)
+    if(!NvxWinsysInitHdc(&winsys,hdc)) {
+        LogMsg("-> [FAIL] Nouveau pushbuffer adapter could not query HDC caps\n");
+        return 0;
+    }
+#endif
     alloc.Size=sizeof(alloc);alloc.Version=NVX_3D_ABI_VERSION;
     alloc.Usage=NVX_3D_USAGE_COLOR_TARGET;alloc.Bytes=layout.Bytes;
     alloc.Width=layout.Width;alloc.Height=layout.Height;
     alloc.PitchBytes=layout.PitchBytes;alloc.TileMode=layout.TileMode;
-    alloc.ClientToken=((uint64_t)GetCurrentProcessId()<<32)|GetTickCount();
-    if(!alloc.ClientToken) alloc.ClientToken=1;
+#if defined(NVX_TEST_NOUVEAU_PUSHBUF)
+    alloc.ClientToken=winsys.ClientToken;
+#endif
     if(!ExtEscape(hdc,NVX_ESCAPE_3D_ALLOC,sizeof(alloc),(LPCSTR)&alloc,
                   sizeof(allocated),(LPSTR)&allocated)) {
         LogMsg("-> [FAIL] NVC0 clear target allocation failed\n");
+#if defined(NVX_TEST_NOUVEAU_PUSHBUF)
+        (void)NvxWinsysCloseClient(&winsys);
+#endif
         return 0;
     }
     allocatedOk=1;
@@ -3069,8 +3102,8 @@ static int TestNvc0ClearEscape(HDC hdc)
     memcpy(batch+sizeof(batchHeader)+sizeof(batchReference)+sizeof(clear.Dwords),
            batchRelocations,sizeof(batchRelocations));
 #if defined(NVX_TEST_NOUVEAU_PUSHBUF)
-    if(!NvxWinsysInitHdc(&winsys,hdc)) {
-        LogMsg("-> [FAIL] Nouveau pushbuffer adapter could not query HDC caps\n");
+    if(!NvxWinsysOpenNouveauChannel(&winsys)) {
+        LogMsg("-> [FAIL] Nouveau adapter could not open the target owner's channel\n");
         ok=0;
     } else {
         pushBo.device=&winsys;
@@ -3409,6 +3442,7 @@ static int TestNvc0ClearEscape(HDC hdc)
         freeRequest.Size=sizeof(freeRequest);
         freeRequest.Version=NVX_3D_ABI_VERSION;
         freeRequest.BufferId=allocated.BufferId;
+        freeRequest.ClientToken=allocated.ClientToken;
         if(!ExtEscape(hdc,NVX_ESCAPE_3D_FREE,sizeof(freeRequest),
                       (LPCSTR)&freeRequest,0,NULL)) {
             LogMsg("-> [FAIL] NVC0 clear target release failed\n");
@@ -3466,6 +3500,10 @@ static int TestNativeNvc0FullSizeClear(HDC hdc)
         return 0;
     }
     allocatedOk=1;
+    if(!NvxTestOpenNouveauChannel(hdc,allocated.ClientToken)) {
+        LogMsg("[NVX_3D_FULLSIZE_NATIVE_CLEAR_RESULT] FAIL owner-channel-open\n");
+        goto done;
+    }
 
     clear.Size=sizeof(clear);clear.Version=NVX_3D_ABI_VERSION;
     clear.DwordCount=NVX_3D_NVC0_CLEAR_DWORDS;
