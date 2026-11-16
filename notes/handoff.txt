@@ -62,17 +62,22 @@ the latest run). Hardware evidence:
    index, depth, and color-target state/submission through the draw and swap;
    do not continue treating allocation kind as the leading explanation without
    evidence from a captured target.
-2. **Context recreation:** later WGL context/channel creation still fails with
-   error 183. Trace WGL ICD context allocation/deletion, channel lease close,
-   and resource cleanup across sequential applications; do not attribute this
-   to the initial successful gears session.
+2. **32-bit ICD missing:** the error-183 gears launch is the 32-bit executable,
+   not proof that a second 64-bit context cannot be created. Only PE32+ x64
+   `nvxogl64.dll` and `nvxmesa.dll` are built/deployed. `install.bat` explicitly
+   deletes the Wow6432Node ICD registration. The x86 gears loader tries these
+   x64 DLL names and has no packaged x86 ICD. Display-driver pixel formats can
+   still report PFD_GENERIC_FORMAT=NO without a usable x86 ICD. Build/deploy an
+   XP-compatible x86 Mesa ICD and register it in the 32-bit registry view.
+   Error 183 is not sufficient to diagnose a channel collision: the test does
+   not clear last error before context creation or report each DLL load error.
 3. **Antigravity OpenGL audit:** its launch can use software rendering or fail
    with error 126 before creating a context. Determine why its selected pixel
    format / ICD load differs from the standalone gears path, then ensure the
    test reports the renderer for the same successful context.
 4. **D3D9:** current package reports no Direct3D HAL and the 64-bit test later
    crashes. This is not covered by the OpenGL allocation change.
-5. **VRAM capacity:** the 128 MiB VRAM aperture does not fit the 4 MiB TLS
+5. **VRAM capacity:** the 128 MiB VRAM aperture does not fit the 64.5 MiB TLS
    allocation after current reservations, so the shim retries it in GART.
    Keep that fallback truthful and validate other tiled or kinded large BOs
    cannot accidentally fall back to incompatible GART storage.
@@ -87,8 +92,9 @@ the latest run). Hardware evidence:
    resources. Do not log every small GART allocation in the serial stream.
 2. Capture an image or readback from the first successful `NV170` gears run;
    compare target and depth surfaces before/after draw and swap.
-3. Trace the second context's error 183 against `DrvCreateContext`/`DrvDeleteContext`,
-   channel open/close tokens, and resource ownership.
+3. Provide an x86 ICD build/deployment path and log DLL load failures in the
+   x86 test. Independently test repeated x64 contexts before concluding that
+   sequential context/channel reuse is still broken.
 4. Fix the Antigravity ICD load/context path and keep the strict hardware gate
    enabled for the next hardware run.
 5. Address D3D9 separately after the OpenGL context and image path are stable.
