@@ -141,6 +141,21 @@ static BOOLEAN NvxGrVerifyClientQueue(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CH
     LogStr(" FIFO0=");LogHex(fifo[0]);
     LogStr(" RAMFC_CHID=");LogHex(((volatile ULONG *)(scratch+0xa000))[0xe8/4]);
     LogStr("\n");
+    /* A userd GPGet may have been retained in the PBDMA diagnostics without
+       a firmware RC notification. Capture channel fetch/interrupt state
+       before STOP_CHANNEL and FREE erase the evidence. */
+    NvxGspLogPbdmaFault(dev);
+    if(c->RunlistBase&&dev->Bar0Length>=c->RunlistBase+0x10U) {
+        ULONG cfg=VideoPortReadRegisterUlong((PULONG)
+            ((PUCHAR)dev->Bar0MmioVirtual+c->RunlistBase+4U));
+        ULONG chram=(cfg&0xfffffff0U)+c->HardwareChannelId*4U;
+        if(chram<=dev->Bar0Length-4U) {
+            ULONG state=VideoPortReadRegisterUlong((PULONG)
+                ((PUCHAR)dev->Bar0MmioVirtual+chram));
+            LogStr("NVX [GR-CLIENT]: CHRAM config=");LogHex(cfg);
+            LogStr(" state=");LogHex(state);LogStr("\n");
+        }
+    }
     (void)NvxGspGetName(dev); /* Drain delayed firmware errors before teardown. */
     c->Faulted=TRUE;
     return FALSE;
@@ -229,6 +244,16 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     if(!nvx_openrm_channel_memory(&chan,(NvU64)physical.QuadPart+0xa000,
         (NvU64)physical.QuadPart+NVX_GR_CLIENT_USERD_OFFSET,
         (NvU64)physical.QuadPart+0xc000,(NvU64)physical.QuadPart+0xe000)) goto fail;
+    /* The OS allocator zeroes the full backing today, but make the new
+       channel's software USERD state explicit before RM publishes its
+       descriptor and the hardware channel is scheduled. */
+    {
+        volatile ULONG *userd=(volatile ULONG *)
+            ((PUCHAR)backing+NVX_GR_CLIENT_USERD_OFFSET);
+        userd[0x88/4]=0;
+        userd[0x8c/4]=0;
+        __sync_synchronize();
+    }
     stage="GPFIFO";
     if(!NvxGspAlloc(dev,c->Tsg,base+5,AMPERE_CHANNEL_GPFIFO_A,&chan,sizeof(chan))) goto fail;
     c->Channel=base+5;

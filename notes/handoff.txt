@@ -1,6 +1,17 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 16, 2026: .217 restores the `.215` common-buffer cache attribute and keeps the OpenRM host doorbell while reinstating the XP runlist pending-channel write. This recovers the boot GR triangle/semaphore probe and a Nouveau OpenGL run at 60.1 FPS with completed NVC0 draw fences. The full suite still FAILS: the later private C797 native-clear submission stalls, and a subsequent WGL gears run cannot create its context (error 183). This is a PARTIAL policy port, not the full host RM resource manager. Latest hardware result is the .217 run below.
+Updated November 16, 2026: `.219` preserves the `.217` boot GR and one successful Nouveau client run, but subsequent client-channel recreation still fails and forces later OpenGL tests to software rendering. A clean USERD reset did not fix it. Hardware evidence now shows ChID 10 and GPFIFO VA `0x11A00000` reused for the next client: PBDMA consumes the GPFIFO entry (`GP_GET=GP_PUT=GP_FETCH=1`) but never begins pushbuffer fetch (`PB_FETCH=0`), with no PBDMA interrupt. The next targeted experiment is to prevent immediate ChID reuse and see whether the failure follows the channel identity. Latest log: `test_logs/v3.0.0.219-20261116-113518.log`.
+
+## .219 hardware test: first client passes; recreated channel stalls before pushbuffer fetch
+
+- Ran `NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1 ./test/test_full_driver.sh`. Host checks and package build passed. VFIO suite exited 1; serial log is `test_logs/v3.0.0.219-20261116-113518.log`, runner output `/tmp/nvx-219-full-test.log`.
+- Boot GR triangle/fence path remains successful. One Nouveau client channel is verified at ChID 10 and VA `0x11A00000`; the log shows gears completes 128 frames in 6 seconds (21.3 FPS). Later client admission fails, cube reports `[OPENGL_RESULT] SOFTWARE`, and a subsequent `wglgears` context fails with error 183. Thus the run contains a working GPU path, but the full suite and repeat-app lifecycle do not pass.
+- `.219` explicitly zeroed USERD GP_GET/GP_PUT before scheduling and captured PBDMA/CHRAM state before teardown. This did not fix recreation. The next channel reused ChID 10, USERD queue VA `0x11A00000`, and GPFIFO VA `0x11A09000`, although its backing physical address changed. At timeout USERD GET/PUT and PBDMA GP_GET/GP_PUT/GP_FETCH were all 1; PBDMA PB_FETCH/PB_GET/PB_PUT were 0, INTR0/1 were 0, and CHRAM moved from `0x2` to `0x46` across the two observations. The GPFIFO entry was fetched, but command execution was not established.
+- Firmware assertion counter remains at baseline 1. The queue reset did not change the hardware state. Do not claim that the GPU executed the queue entry or that channel-ID reuse is already proven causal.
+- Relevant code: `src_driver/nvx_gr_clients.c` (fresh channel lifecycle and timeout snapshot), `src_driver/nvx_gsp.c` (PBDMA diagnostics and GART mapping/invalidation), `src_driver/nvx_openrm_containers.c` (upstream EHeap ChID allocation/release), `src_driver/nvxmp.c` (client backing allocate/free), `notes/handoff.txt`, and the serial log above.
+- Next: run one controlled candidate using a fresh ChID after the first channel is closed. If that changes the outcome, implement a bounded, correct retirement/reuse protocol rather than leaking ChIDs. If it still fails, compare known-good and failed PBDMA/CHRAM state and investigate GPFIFO-to-pushbuffer address translation. Keep the existing `.217` boot and Nouveau proof separate from the failing repeat-client path.
+
+The `.217` hardware test below is historical; it is not the latest result.
 
 ## .217 hardware test: boot GR recovered; private queue and WGL gears still fail
 
