@@ -30,4 +30,4 @@ c8bd0dcceed48efd01569d0688fa8ea95702fc70caca3efe7058026493491a10  /home/sanjay/t
 c9b221ba797c107713037a76f6f8fac8d6731ccae3a13a0aac669076ece5869a  /home/sanjay/temp/xddm/mesa_patches/0029-nouveau-zero-cb-sample-locations.patch
 380d1cfe601bb94477491a510165ca94a768c213e1a4da769df2258e01008b6e  /home/sanjay/temp/xddm/mesa_patches/0030-nouveau-xp-direct-linear-transfer-map.patch
 dd49d6858839d38191bc51221f8bf4b1e0f265d5ffc8c6939095c6b1a89ddf3a  /home/sanjay/temp/xddm/mesa_patches/0031-nouveau-xp-use-m2mf-linear-copy.patch
-cde6ff68c122fff83a560db320c34eb63dc602fac749e33f9d5bcf7b5ce1955e  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll
+5c83bbb0d3dd18f204d47da7ab2cb7d102a352b9c94124ef8e3805b22635294c  /home/sanjay/temp/xddm/dist_full/nvxogl64.dll

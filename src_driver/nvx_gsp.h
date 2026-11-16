@@ -604,6 +604,7 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
                             ULONG timeoutMs);
 BOOLEAN NvxGspUpload(PVOID HwDeviceExtension,ULONG64 dstVa,const void *src,ULONG bytes);
 
+BOOLEAN NvxGspRenewGraphicsChannel(PVOID HwDeviceExtension);
 VOID NvxGspShutdown(PVOID HwDeviceExtension);
 BOOLEAN NvxGspUnregisterFaultShadow(PNVX_DEVICE_EXTENSION dev);
 int NvxGspSequencerCore(void *context,unsigned int opcode);

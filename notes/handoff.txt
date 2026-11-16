@@ -2,6 +2,16 @@
 
 Updated November 15, 2026 after `.208` changed the FB page-list flags to OpenRM's video-memory values and passed the exact-address FB P2MF probe on hardware. Full OpenGL still does not complete. Latest hardware log: `test_logs/v3.0.0.208-20261115-195047.log`.
 
+## .210 FAILED candidate: class identity, GART publication, fresh channel lease
+
+- Advertise actual RM A140 P2MF class (Mesa NVF0_P2MF), replacing the A040 alias in winsys and DRM SCLASS/object creation. Log RM class/engine IDs for the auxiliary objects.
+- Publish CPU GART writes with a full memory barrier before acknowledging upload. Common-buffer allocation and coherent PTE policy are unchanged; this addresses publication ordering, not a proven cache failure.
+- Preserve the TSG/context-share handles instead of clearing them after bring-up. On each new lease, reserve ownership, release the old TSG tree and sibling notifier through RM, then clear/reuse backing only after acknowledged teardown and recreate/verify the channel. The device fault-shadow registration persists across channel lifetimes.
+- Host suites, rebuilt Mesa/miniport and XP import audit pass. Exactly one .210 VFIO suite run was performed: test_logs/v3.0.0.210-20261115-202448.log.
+- REGRESSION: new channel recreation fails before the isolated FB probe and Mesa submission. RM FREE and allocation RPCs return success, but the recreated initialization probe fetches its command without releasing the fence. GR physical initialization control returns status 0x1f; context lookup returns 0x31. Assertions rise 1 -> 5 -> 9 across attempted renewals. No fresh-channel PASS or hardware OpenGL result. Later cube reports SOFTWARE.
+- RM routing diagnostics confirm A140 I2M engine ID 1, C7B5 copy engine ID 9. Class identity and GART publication are implemented; their effect on the original stall is masked by the new lifecycle failure. Do not call all three areas fixed.
+- Next: separate boot-only GR/context promotion initialization from per-channel creation; audit promoted context backing lifetime and RM resource teardown before reusing it. The current renewal calls the boot bring-up routine and this is not a verified upstream-equivalent channel lifecycle. Preserve .209 as the previous baseline. Pause after this single run.
+
 ## Consolidated .209 candidate (single hardware run, then pause)
 
 - Restores upstream Ampere copy selection by excluding patch 0031 (legacy Fermi M2MF methods on the I2M subchannel).
@@ -17,8 +27,8 @@ Updated November 15, 2026 after `.208` changed the FB page-list flags to OpenRM'
 
 ## Latest Run & Artifacts
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.209-20261115-201026.log`
-- **Latest hardware-tested version**: `v3.0.0.209`
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.210-20261115-202448.log`
+- **Latest hardware-tested version**: `v3.0.0.210`
 - **Current state**: `.208` sends `NO_MAP | NONCONTIGUOUS | VIDMEM` (`0x40000210`) for FB page-list registration. Hardware accepted the registration and the isolated P2MF transfer passed.
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
 

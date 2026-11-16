@@ -100,7 +100,7 @@ NvxWinsysOpenNouveauChannel(NVX_WINSYS_DEVICE *device)
    device->NouveauObjectBindings[1].ClassEngineId =
       result.ComputeClassEngineId;
    device->NouveauObjectBindings[2].Subchannel = 2U;
-   device->NouveauObjectBindings[2].UserClass = 0x0000a040U;
+   device->NouveauObjectBindings[2].UserClass = 0x0000a140U;
    device->NouveauObjectBindings[2].ClassEngineId =
       result.M2mfClassEngineId;
    device->NouveauObjectBindings[3].Subchannel = 3U;

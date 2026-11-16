@@ -2266,6 +2266,18 @@ BOOLEAN NTAPI HwVidStartIO(
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
         }
         if(request.Operation==NVX_3D_CHANNEL_OPEN) {
+            if(!engine->Nvx3dChannelOwnerToken) {
+                BOOLEAN renewed;
+                /* Reserve the lease before dropping the buffer lock for RM. */
+                engine->Nvx3dChannelOwnerToken=request.ClientToken;
+                Nvx3dUnlockBuffers();
+                renewed=NvxGspRenewGraphicsChannel(engine);
+                if(!Nvx3dLockBuffers()) {status=ERROR_BUSY;break;}
+                if(!renewed) {
+                    engine->Nvx3dChannelOwnerToken=0;
+                    Nvx3dUnlockBuffers();status=ERROR_DEVICE_NOT_READY;break;
+                }
+            }
             if(!engine->GspGraphicsChannelReady||
                !engine->GspGraphicsCommandVerified||
                engine->GspGraphicsChannelFaulted||engine->GspMmuFaultQueued||
@@ -3009,6 +3021,9 @@ BOOLEAN NTAPI HwVidStartIO(
             VideoPortMoveMemory((PUCHAR)saved.SystemVirtual+upload.Offset,
                                 (PUCHAR)RequestPacket->InputBuffer+headerBytes,
                                 upload.Bytes);
+            /* Publish uncached/coherent GART writes before acknowledging the
+               upload that precedes GPU copy-engine consumption. */
+            __sync_synchronize();
             status=NO_ERROR;
             statusBlock->Information=inputBytes;
         } else if(NvxGspUpload(engine,saved.GpuVa+upload.Offset,

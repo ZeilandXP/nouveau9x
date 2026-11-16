@@ -612,6 +612,10 @@ static BOOLEAN __attribute__((unused)) NvxGspGetClassEngineId(PNVX_DEVICE_EXTENS
     reply=(const NV906F_CTRL_GET_CLASS_ENGINEID_PARAMS *)(dev->RpcRxRecord+104);
     if(!reply->classEngineID) return FALSE;
     *classEngineId=reply->classEngineID;
+    LogStr("NVX [GR-ROUTE]: object=");LogHex(object);
+    LogStr(" class=");LogHex(reply->classID);
+    LogStr(" engine=");LogHex(reply->engineID);
+    LogStr(" binding=");LogHex(reply->classEngineID);LogStr("\n");
     return TRUE;
 }
 
@@ -1715,7 +1719,8 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
         LogStr(" replay bytes=");LogHex(reply->replayableFaultBufferSize);
         LogStr(" metadata=");LogHex(reply->replayableShadowFaultBufferMetadataSize);LogStr("\n");
 #if NVX_ENABLE_GR_SUBMISSION_PROBE
-        if(!NvxGspSetupFaultBuffer(dev,reply->nonReplayableFaultBufferSize,
+        if(!dev->GspFaultShadowRegistered&&
+           !NvxGspSetupFaultBuffer(dev,reply->nonReplayableFaultBufferSize,
                                    reply->nonReplayableShadowFaultBufferMetadataSize,
                                    faultBufferClass)) {
             LogStr("NVX [GR-FAULT]: GR submit probe stopped because fault reporting is unavailable.\n");
@@ -2460,8 +2465,8 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
         return FALSE;
     }
 
-    dev->GspGraphicsTsgHandle=0;
-    dev->GspGraphicsContextShareHandle=0;
+    dev->GspGraphicsTsgHandle=tsgHandle;
+    dev->GspGraphicsContextShareHandle=ctxShareHandle;
     dev->GspGraphicsChannelHandle=channelHandle;
     dev->GspGraphicsObjectHandle=grHandle;
     dev->GspGraphicsChannelReady=TRUE;
@@ -2487,6 +2492,46 @@ BOOLEAN NvxGspUnregisterFaultShadow(PNVX_DEVICE_EXTENSION dev)
  * not arbitrary methods on this shared privileged channel. The kernel builds
  * the C797 pushbuffer and owns the semaphore address. */
 volatile ULONG NvxGrUserSubmitBusy=0;
+
+/* Reuse backing only after RM has destroyed the complete old TSG tree.
+ * Fixed USERD and instance storage permit one graphics lease at a time. */
+BOOLEAN NvxGspRenewGraphicsChannel(PVOID extension)
+{
+#if NVX_ENABLE_GR_CHANNEL_PROBE
+    PNVX_DEVICE_EXTENSION dev=extension;
+    ULONG release[4];
+    BOOLEAN ok=FALSE;
+    if(!dev||!dev->GspInitialized||dev->GspMmuFaultQueued||
+       __sync_lock_test_and_set(&NvxGrUserSubmitBusy,1)) return FALSE;
+    dev->GspGraphicsChannelReady=FALSE;
+    dev->GspGraphicsCommandVerified=FALSE;
+    release[0]=dev->GspClientHandle;
+    release[1]=dev->GspDeviceHandle;
+    release[2]=dev->GspGraphicsTsgHandle;
+    release[3]=0;
+    if(!release[2]||!NvxGspCall(dev,10,release,sizeof(release))) goto done;
+    dev->GspGraphicsTsgHandle=0;
+    release[2]=0x00020003; /* context-DMA notifier is a sibling of the TSG */
+    if(!NvxGspCall(dev,10,release,sizeof(release))) goto done;
+    dev->GspGraphicsChannelFaulted=FALSE;
+    dev->GspGraphicsTriangleVerified=FALSE;
+    dev->GspGraphicsGPPut=0;
+    VideoPortZeroMemory((PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET+0x9000,
+                        0x6000);
+    __sync_synchronize();
+    ok=NvxGspCreateGraphicsProbe(dev);
+    LogStr(ok?"NVX [GR-LIFETIME]: fresh channel verified for lease.\n":
+              "NVX [GR-LIFETIME]: channel recreation failed; backing retained.\n");
+done:
+    if(!ok) dev->GspGraphicsChannelFaulted=TRUE;
+    __sync_lock_release(&NvxGrUserSubmitBusy);
+    return ok;
+#else
+    (void)extension;
+    return FALSE;
+#endif
+}
+
 
 #if NVX_ENABLE_GR_SUBMISSION_PROBE
 static VOID NvxGspAppendUserTriangle(PNVX_DEVICE_EXTENSION dev,PUCHAR scratch,

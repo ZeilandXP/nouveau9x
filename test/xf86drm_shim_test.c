@@ -419,7 +419,7 @@ main(void)
          assert(drmCommandWriteRead(fd, DRM_NOUVEAU_NVIF, &query,
                                     sizeof(query)) == 0);
          assert(query.sclass.count == 5);
-         assert(query.classes[0].oclass == 0xa040);
+         assert(query.classes[0].oclass == 0xa140);
          assert(query.classes[1].oclass == 0xc7b5);
          assert(query.classes[2].oclass == 0x902d);
          assert(query.classes[3].oclass == 0xc7c0);
@@ -437,7 +437,7 @@ main(void)
          create.ioctl.type = NVIF_IOCTL_V0_NEW;
          create.create.handle = 0xbeef323fU;
          create.create.object = 0x12345678U;
-         create.create.oclass = 0xa040;
+         create.create.oclass = 0xa140;
          create.create.route = NVIF_IOCTL_V0_ROUTE_NVIF;
          assert(drmCommandWrite(fd, DRM_NOUVEAU_NVIF, &create,
                                 sizeof(create)) == 0);
