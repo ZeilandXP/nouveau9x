@@ -101,7 +101,35 @@ NvBool nvx_openrm_channel_identity(NvU32 channelId,NvU32 runlistId,
         DRF_DEF(OS04,_FLAGS,_CHANNEL_USERD_INDEX_PAGE_FIXED,_TRUE)|
         DRF_NUM(OS04,_FLAGS,_CHANNEL_USERD_INDEX_PAGE_VALUE,channelId/8U)|
         DRF_NUM(OS04,_FLAGS,_CHANNEL_USERD_INDEX_VALUE,channelId%8U);
-    *submitToken=DRF_NUM(_CTRL,_VF_DOORBELL,_VECTOR,channelId)|
-                 DRF_NUM(_CTRL,_VF_DOORBELL,_RUNLIST_ID,runlistId);
+    return nvx_openrm_work_submit_token(channelId,runlistId,submitToken)==NV_OK;
+}
+
+/* Descriptor construction follows kchannelAllocMem_GM107 and
+ * _kchannelSendChannelAllocRpc. The backing allocation stays XP-owned.
+ * Crucially RAMFC is a 512-byte subdescriptor at offset ZERO of RAMIN. */
+#include <swref/published/maxwell/gm107/dev_ram.h>
+#include <kernel/os/nv_memory_type.h>
+NvBool nvx_openrm_channel_memory(NV_CHANNEL_ALLOC_PARAMS *p,NvU64 instance,
+    NvU64 userd,NvU64 methods,NvU64 notifier)
+{
+    NV_MEMORY_DESC_PARAMS *d[5];
+    NvU64 base[5]={instance,instance,userd,methods,notifier};
+    NvU64 size[5]={NV_RAMIN_ALLOC_SIZE,DRF_SIZE(NV_RAMIN_RAMFC)/8,0x200,0x2000,0x1000};
+    if(!p||(instance&(NV_RAMIN_ALLOC_SIZE-1U))||(userd&0x1ffU)||
+       (methods&0xfffU)||(notifier&0xfffU)) return NV_FALSE;
+    for(unsigned i=0;i<5;i++) if(!base[i]||base[i]>~(NvU64)0-size[i]) return NV_FALSE;
+    if(userd<instance+NV_RAMIN_ALLOC_SIZE&&instance<userd+0x200U) return NV_FALSE;
+    if(methods<instance+NV_RAMIN_ALLOC_SIZE&&instance<methods+0x2000U) return NV_FALSE;
+    if(notifier<instance+NV_RAMIN_ALLOC_SIZE&&instance<notifier+0x1000U) return NV_FALSE;
+    if(userd<methods+0x2000U&&methods<userd+0x200U) return NV_FALSE;
+    if(userd<notifier+0x1000U&&notifier<userd+0x200U) return NV_FALSE;
+    if(methods<notifier+0x1000U&&notifier<methods+0x2000U) return NV_FALSE;
+    d[0]=&p->instanceMem;d[1]=&p->ramfcMem;d[2]=&p->userdMem;
+    d[3]=&p->mthdbufMem;d[4]=&p->errorNotifierMem;
+    for(unsigned i=0;i<5;i++) {
+        d[i]->base=base[i];d[i]->size=size[i];
+        d[i]->addressSpace=1; /* ADDR_SYSMEM */
+        d[i]->cacheAttrib=NV_MEMORY_UNCACHED; /* common buffer CacheEnabled=FALSE */
+    }
     return NV_TRUE;
 }

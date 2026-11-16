@@ -314,7 +314,8 @@ typedef struct _VIDEO_MODE_DEF {
  * GPU VAs are disjoint in the validated shared aperture; contexts and queues
  * are private. Hardware scheduling remains RM's responsibility. */
 typedef struct NVX_GR_CLIENT_CHANNEL {
-    ULONG64 ClientToken, BackingBufferId, GpuVa;
+    NvU64 ClientToken;
+    ULONG64 BackingBufferId, GpuVa;
     PVOID Virtual;
     PHYSICAL_ADDRESS Physical;
     ULONG Tsg, ContextShare, Channel, Notifier, Memory;

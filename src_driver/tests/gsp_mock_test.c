@@ -1,6 +1,7 @@
 /* User-mode harness for the real GSP bootstrap, with VideoPort/MMIO mocked. */
 #include "nvx_gsp.h"
 #include "nvx_rpc.h"
+#include "nvx_openrm_shim.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -563,8 +564,32 @@ static void test_reusable_queue(void) {
     free(dma);
 }
 
+static void test_upstream_channel_ids(void)
+{
+    void *heap=NULL;
+    NvU64 owners[32];
+    NvU32 ids[32],reused=0;
+    assert(nvx_openrm_chid_heap_create(&heap)==NV_OK && heap);
+    for(unsigned i=0;i<32;i++) {
+        owners[i]=0x100U+i;
+        assert(nvx_openrm_chid_alloc(heap,&owners[i],NVX_GR_CLIENT_USERD_OFFSET,&ids[i])==NV_OK);
+        assert(ids[i]>=8U && (ids[i]%8U)==2U);
+        for(unsigned j=0;j<i;j++) assert(ids[i]/8U!=ids[j]/8U);
+    }
+    assert(nvx_openrm_chid_free(heap,&owners[1],ids[0])!=NV_OK);
+    assert(nvx_openrm_chid_alloc(heap,&owners[0],3,&reused)!=NV_OK);
+    for(unsigned i=0;i<32;i++) assert(nvx_openrm_chid_free(heap,&owners[i],ids[i])==NV_OK);
+    assert(nvx_openrm_chid_alloc(heap,&owners[0],NVX_GR_CLIENT_USERD_OFFSET,&reused)==NV_OK);
+    assert(reused==ids[0]);
+    assert(nvx_openrm_chid_free(heap,&owners[0],reused)==NV_OK);
+    nvx_openrm_chid_heap_destroy(&heap);
+    assert(!heap);
+    puts("Upstream channel-ID tests passed: private USERD pages, slots, owner checks and reuse.");
+}
+
 int main(void)
 {
+    test_upstream_channel_ids();
     for(scenario=0;scenario<13;scenario++) {
         memset(&dev,0,sizeof(dev));memset(regs,0,sizeof(regs));
         imemTransfers=dmemTransfers=cpuStarts=0;

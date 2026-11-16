@@ -123,8 +123,10 @@ static BOOLEAN NvxGrVerifyClientQueue(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CH
     __sync_synchronize();
     c->Put=1;userd[0x8c/4]=1;
     __sync_synchronize();
-    VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+0x30090),c->SubmitToken);
-    VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+c->RunlistBase+0x90),c->HardwareChannelId);
+    if(nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,c->SubmitToken)!=NV_OK) {
+        c->Faulted=TRUE;
+        return FALSE;
+    }
     for(ULONG wait=0;wait<50000U;wait++) {
         if(fence[0]==0x4752434cU) {
             __sync_synchronize();
@@ -133,6 +135,13 @@ static BOOLEAN NvxGrVerifyClientQueue(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CH
         if(c->Faulted||dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued) break;
         VideoPortStallExecution(100U);
     }
+    LogStr("NVX [GR-CLIENT]: queue verification timeout chid=");LogHex(c->HardwareChannelId);
+    LogStr(" USERD_GET=");LogHex(userd[0x88/4]);
+    LogStr(" USERD_PUT=");LogHex(userd[0x8c/4]);
+    LogStr(" FIFO0=");LogHex(fifo[0]);
+    LogStr(" RAMFC_CHID=");LogHex(((volatile ULONG *)(scratch+0xa000))[0xe8/4]);
+    LogStr("\n");
+    (void)NvxGspGetName(dev); /* Drain delayed firmware errors before teardown. */
     c->Faulted=TRUE;
     return FALSE;
 }
@@ -151,12 +160,14 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     NV_CTXSHARE_ALLOCATION_PARAMETERS share={0};
     NV2080_CTRL_GPU_PROMOTE_CTX_PARAMS *promote;
     const char *stage="preconditions";
-    ULONG registration[46]={0},bind=NV2080_ENGINE_TYPE_GRAPHICS;
-    ULONG query[124]={0},slot,base,doorbellConfig,classes[5]={AMPERE_B,
+    ULONG registration[46]={0};
+    NVA06F_CTRL_BIND_PARAMS bind={NV2080_ENGINE_TYPE_GRAPHICS};
+    NV2080_CTRL_GPU_GET_ENGINE_RUNLIST_PRI_BASE_PARAMS query={0};
+    ULONG slot,base,doorbellConfig,classes[5]={AMPERE_B,
         NVX_RM_CLASS_AMPERE_COMPUTE_B,NVX_RM_CLASS_KEPLER_I2M_B,
         NVX_RM_CLASS_FERMI_2D_A,NVX_RM_CLASS_AMPERE_DMA_COPY_B};
     NvU32 expectedToken,channelId;
-    UCHAR schedule[2]={1,0};
+    NVA06F_CTRL_GPFIFO_SCHEDULE_PARAMS schedule={NV_TRUE,NV_FALSE};
     BOOLEAN ok=FALSE;
     if(!dev||!lease||!backing||!gpuVa||!bufferId||!dev->GspGrPromotionAccepted||
        !dev->GspClientGrLayout.count||!dev->GspGartReady||
@@ -191,12 +202,12 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     c->NotifierAllocated=TRUE;
     tsg.hVASpace=dev->GspVaSpaceHandle;tsg.engineType=NV2080_ENGINE_TYPE_GRAPHICS;
     stage="TSG";
-    if(!NvxGspAlloc(dev,dev->GspDeviceHandle,c->Tsg,0xa06c,&tsg,sizeof(tsg))) goto fail;
+    if(!NvxGspAlloc(dev,dev->GspDeviceHandle,c->Tsg,KEPLER_CHANNEL_GROUP_A,&tsg,sizeof(tsg))) goto fail;
     c->TsgAllocated=TRUE;
     share.hVASpace=dev->GspVaSpaceHandle;
     share.flags=NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT_SYNC;
     stage="context share";
-    if(!NvxGspAlloc(dev,c->Tsg,c->ContextShare,0x9067,&share,sizeof(share))) goto fail;
+    if(!NvxGspAlloc(dev,c->Tsg,c->ContextShare,FERMI_CONTEXT_SHARE_A,&share,sizeof(share))) goto fail;
     /* Direct GSP allocation needs the explicit context object, as does the
      * verified boot setup; full host RM normally creates it in the TSG path. */
     stage="kernel graphics context";
@@ -213,15 +224,11 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     if(!nvx_openrm_channel_identity(channelId,0,&chan.flags,&expectedToken)) goto fail;
     chan.hContextShare=c->ContextShare;chan.engineType=NV2080_ENGINE_TYPE_GRAPHICS;
     chan.hObjectError=c->Notifier;chan.hUserdMemory[0]=c->Memory;
-    chan.userdOffset[0]=NVX_GR_CLIENT_USERD_OFFSET;chan.internalFlags=0x19;
-    chan.instanceMem.base=(ULONG64)physical.QuadPart+0xa000;
-    chan.instanceMem.size=0x1000;chan.instanceMem.addressSpace=1;
-    chan.userdMem.base=(ULONG64)physical.QuadPart+NVX_GR_CLIENT_USERD_OFFSET;
-    chan.userdMem.size=0x200;chan.userdMem.addressSpace=1;
-    chan.ramfcMem.base=(ULONG64)physical.QuadPart+0xb000;
-    chan.ramfcMem.size=0x200;chan.ramfcMem.addressSpace=1;
-    chan.mthdbufMem.base=(ULONG64)physical.QuadPart+0xc000;
-    chan.mthdbufMem.size=0x2000;chan.mthdbufMem.addressSpace=1;
+    chan.userdOffset[0]=NVX_GR_CLIENT_USERD_OFFSET;chan.internalFlags=nvx_openrm_channel_internal_flags();
+    stage="channel memory descriptors";
+    if(!nvx_openrm_channel_memory(&chan,(NvU64)physical.QuadPart+0xa000,
+        (NvU64)physical.QuadPart+NVX_GR_CLIENT_USERD_OFFSET,
+        (NvU64)physical.QuadPart+0xc000,(NvU64)physical.QuadPart+0xe000)) goto fail;
     stage="GPFIFO";
     if(!NvxGspAlloc(dev,c->Tsg,base+5,AMPERE_CHANNEL_GPFIFO_A,&chan,sizeof(chan))) goto fail;
     c->Channel=base+5;
@@ -234,22 +241,20 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     }
     stage="bind";
     if(!NvxGspControl(dev,c->Channel,NVA06F_CTRL_CMD_BIND,&bind,sizeof(bind))) goto fail;
-    /* Initialize MAIN/PM/PATCH per context; device-global buffers retain the
-     * original physical backing and mappings, as in kgrctxPrepareInitializeCtxBuffer. */
+    /* Upstream selects which buffers need physical initialization. All global
+     * IDs use the boot backing, already initialized before client admission. */
     promote=(NV2080_CTRL_GPU_PROMOTE_CTX_PARAMS *)&dev->GrContextInfoParams;
     VideoPortZeroMemory(promote,sizeof(*promote));
     promote->engineType=NV2080_ENGINE_TYPE_GRAPHICS;
     promote->hChanClient=dev->GspClientHandle;promote->hObject=c->Channel;
     for(ULONG i=0;i<dev->GspClientGrLayout.count;i++) {
         const NVX_GR_BUFFER *b=&dev->GspClientGrLayout.buffers[i];
-        NV2080_CTRL_GPU_PROMOTE_CTX_BUFFER_ENTRY *e;
-        if(b->id>2U) continue;
-        e=&promote->promoteEntry[promote->entryCount++];
-        e->bufferId=(NvU16)b->id;
-        e->gpuPhysAddr=(ULONG64)physical.QuadPart+NVX_GR_CLIENT_CONTEXT_OFFSET+b->offset;
-        e->size=b->size;e->bInitialize=TRUE;e->bNonmapped=TRUE;
-        e->physAttr=DRF_DEF(2080,_CTRL_GPU_INITIALIZE_CTX,_APERTURE,_NCOH_SYS)|
-                    DRF_DEF(2080,_CTRL_GPU_INITIALIZE_CTX,_GPU_CACHEABLE,_NO);
+        NvBool global=nvx_openrm_context_is_global(b->id),add;
+        NvU64 physicalBase=global?(NvU64)dev->GspGrContextPhysical.QuadPart:
+            (NvU64)physical.QuadPart+NVX_GR_CLIENT_CONTEXT_OFFSET;
+        if(nvx_openrm_context_init_entry(b->id,physicalBase+b->offset,b->size,
+            global,&promote->promoteEntry[promote->entryCount],&add)!=NV_OK) goto fail;
+        if(add) promote->entryCount++;
     }
     stage="physical context initialization";
     __sync_synchronize();
@@ -261,7 +266,7 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     for(ULONG i=0;i<dev->GspClientGrLayout.count;i++) {
         const NVX_GR_BUFFER *b=&dev->GspClientGrLayout.buffers[i];
         promote->promoteEntry[i].bufferId=(NvU16)b->id;
-        promote->promoteEntry[i].gpuVirtAddr=(b->id>=8U?GSP_GR_CONTEXT_GPU_VA:
+        promote->promoteEntry[i].gpuVirtAddr=(nvx_openrm_context_is_global(b->id)?GSP_GR_CONTEXT_GPU_VA:
             gpuVa+NVX_GR_CLIENT_CONTEXT_OFFSET)+b->offset;
     }
     /* A failed promote may have installed a subset of bindings. Evict before
@@ -270,9 +275,15 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     c->Promoted=TRUE;
     if(!NvxGspControl(dev,dev->GspSubdeviceHandle,NV2080_CTRL_CMD_GPU_PROMOTE_CTX,promote,sizeof(*promote))) goto fail;
     stage="runlist identity";
-    query[0]=NV2080_ENGINE_TYPE_GRAPHICS;
-    if(!NvxGspControl(dev,dev->GspSubdeviceHandle,NV2080_CTRL_CMD_GPU_GET_ENGINE_RUNLIST_PRI_BASE,query,sizeof(query))) goto fail;
-    c->RunlistBase=((ULONG *)dev->RpcRxRecord)[26+62];
+    for(ULONG i=0;i<NV2080_GPU_MAX_ENGINES_LIST_SIZE;i++)
+        query.engineList[i]=NV2080_ENGINE_TYPE_NULL;
+    query.engineList[0]=NV2080_ENGINE_TYPE_GRAPHICS;
+    if(!NvxGspControl(dev,dev->GspSubdeviceHandle,NV2080_CTRL_CMD_GPU_GET_ENGINE_RUNLIST_PRI_BASE,&query,sizeof(query))) goto fail;
+    {
+        const NV2080_CTRL_GPU_GET_ENGINE_RUNLIST_PRI_BASE_PARAMS *reply=
+            (const NV2080_CTRL_GPU_GET_ENGINE_RUNLIST_PRI_BASE_PARAMS *)(dev->RpcRxRecord+104);
+        c->RunlistBase=reply->runlistPriBase[0];
+    }
     if(!c->RunlistBase||dev->Bar0Length<0x30094||c->RunlistBase>dev->Bar0Length-0x304) goto fail;
     doorbellConfig=VideoPortReadRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+c->RunlistBase+8));
     if(doorbellConfig==0xffffffffU||(doorbellConfig&0xffff0000U)==0xbadf0000U) goto fail;
@@ -283,7 +294,7 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
      * Avoid sending the known-unsupported firmware control on each open. */
     c->SubmitToken=expectedToken;
     stage="schedule";
-    if(!NvxGspControl(dev,c->Channel,NVA06F_CTRL_CMD_GPFIFO_SCHEDULE,schedule,sizeof(schedule))) goto fail;
+    if(!NvxGspControl(dev,c->Channel,NVA06F_CTRL_CMD_GPFIFO_SCHEDULE,&schedule,sizeof(schedule))) goto fail;
     c->Scheduled=TRUE;
     stage="private queue fence verification";
     if(!NvxGrVerifyClientQueue(dev,c)) goto fail;

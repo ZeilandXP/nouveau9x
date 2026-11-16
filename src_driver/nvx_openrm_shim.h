@@ -41,6 +41,16 @@ void nvx_openrm_chid_heap_destroy(void **state);
 NV_STATUS nvx_openrm_chid_alloc(void *, NvU64 *, NvU32 userdOffset, NvU32 *channelId);
 NV_STATUS nvx_openrm_chid_free(void *, NvU64 *, NvU32 channelId);
 
+/* Narrow upstream policy API. Object views are private to the implementation;
+ * no XP device object is cast to an upstream NVOC object. */
+NvU32 nvx_openrm_channel_internal_flags(void);
+NV_STATUS nvx_openrm_work_submit_token(NvU32,NvU32,NvU32 *);
+NV_STATUS nvx_openrm_context_init_entry(NvU32,NvU64,NvU64,NvBool,
+    NV2080_CTRL_GPU_PROMOTE_CTX_BUFFER_ENTRY *,NvBool *);
+NvBool nvx_openrm_context_is_global(NvU32);
+NV_STATUS nvx_openrm_kick(void *,NvU32,NvU32);
+NvBool nvx_openrm_channel_memory(NV_CHANNEL_ALLOC_PARAMS *,NvU64,NvU64,NvU64,NvU64);
+
 /* Delays and timing */
 void  nvx_stall_us(NvU32 microseconds);
 void  nvx_delay_ms(NvU32 milliseconds);

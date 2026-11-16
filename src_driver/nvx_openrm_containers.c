@@ -68,10 +68,12 @@ NV_STATUS nvx_openrm_chid_heap_create(void **result)
     constructObjEHeap(heap,0,2048,sizeof(NvU64),0);
     /* The upstream constructor is void; detect failure before using its lists. */
     if(!heap->pBlockList) {nvx_rm_free(heap);return NV_ERR_NO_MEMORY;}
+    /* Isolation must be enabled before allocating. Even the fixed device
+     * reservation must provide the ownership comparator under isolation. */
     status=heap->eheapSetOwnerIsolation(heap,NV_TRUE,8);
-    /* Reserve the entire device USERD page, including boot CE/GR IDs 1/2. */
     if(status==NV_OK)
-        status=heap->eheapAlloc(heap,0x4e5658U,&flags,&start,&size,1,1,&reserved,NULL,NULL);
+        status=heap->eheapAlloc(heap,0x4e5658U,&flags,&start,&size,1,1,
+                              &reserved,&deviceOwner,nvx_rm_same_owner);
     if(status!=NV_OK) {heap->eheapDestruct(heap);nvx_rm_free(heap);return status;}
     reserved->pData=&deviceOwner;
     *result=heap;

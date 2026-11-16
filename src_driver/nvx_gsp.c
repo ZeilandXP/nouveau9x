@@ -1488,7 +1488,7 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
     NV_CTXSHARE_ALLOCATION_PARAMETERS ctxShare={0};
     ULONG bindEngine=NV2080_ENGINE_TYPE_GRAPHICS;
     UCHAR schedEnable[2]={1,0};
-    ULONG64 scratchPhys,instPhys,userdPhys,ramfcPhys,methodPhys,fifoGpuVa,scratchEnd;
+    ULONG64 scratchPhys,instPhys,userdPhys,methodPhys,fifoGpuVa,scratchEnd;
     NV0080_CTRL_GPU_GET_CLASSLIST_V2_PARAMS supportedClasses={0};
     ULONG classEngineId=0,faultBufferClass=0;
     NV906F_CTRL_GET_CLASS_ENGINEID_PARAMS classEngineParams={0};
@@ -1549,7 +1549,6 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
     scratchPhys=(ULONG64)dev->GspDmaPhysical.QuadPart+GSP_SCRATCH_OFFSET;
     instPhys=scratchPhys+0xa000;
     userdPhys=scratchPhys+0xb400;
-    ramfcPhys=scratchPhys+0xb000;
     methodPhys=scratchPhys+0xc000;
     fifoGpuVa=dev->GspScratchGpuVa+0x9000;
     scratchEnd=scratchPhys+GSP_SCRATCH_SIZE;
@@ -1649,28 +1648,12 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
     chan.userdOffset[0]=0xb400;
     /* CPU-RM normally derives these before its GSP channel-allocation RPC:
        ADMIN | ERROR_NOTIFIER_TYPE_CTXDMA | ECC_ERROR_NOTIFIER_TYPE_NONE. */
-    chan.internalFlags=0x19;
-    /* Unlike NVK's host-RM API path, this direct GSP-RM RPC must carry the
-       physical descriptors consumed by _kchannelDescribeMemDescsFromParams. */
-    chan.instanceMem.base=instPhys;
-    chan.instanceMem.size=0x1000;
-    chan.instanceMem.addressSpace=1; /* ADDR_SYSMEM */
-    chan.instanceMem.cacheAttrib=0;  /* coherent system memory */
-    chan.userdMem.base=userdPhys;
-    chan.userdMem.size=0x200;
-    chan.userdMem.addressSpace=1;
-    chan.userdMem.cacheAttrib=0;
-    /* RM creates separate descriptors for instance and RAMFC backing. Keep
-       them disjoint; aliasing RAMFC over the instance block can corrupt saved
-       channel pointers after context switches under sustained submissions. */
-    chan.ramfcMem.base=ramfcPhys;
-    chan.ramfcMem.size=0x200;
-    chan.ramfcMem.addressSpace=1;
-    chan.ramfcMem.cacheAttrib=0;
-    chan.mthdbufMem.base=methodPhys;
-    chan.mthdbufMem.size=0x2000;
-    chan.mthdbufMem.addressSpace=1;
-    chan.mthdbufMem.cacheAttrib=0;
+    chan.internalFlags=nvx_openrm_channel_internal_flags();
+    if(!nvx_openrm_channel_memory(&chan,instPhys,userdPhys,methodPhys,
+                                  scratchPhys+0xe000)) {
+        LogStr("NVX [GR]: upstream channel descriptor contract rejected.\n");
+        return FALSE;
+    }
 
     if(!NvxGspAlloc(dev,tsgHandle,channelHandle,AMPERE_CHANNEL_GPFIFO_A,&chan,sizeof(chan))) {
         LogStr("NVX [GR]: graphics GPFIFO channel allocation failed.\n");
@@ -1850,16 +1833,16 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
                    grLayout.buffers[i].size>dev->GspGrContextLength-grLayout.buffers[i].offset) {
                     valid=FALSE;break;
                 }
-                /* Matches kgrctxPrepareInitializeCtxBuffer's initialized IDs. */
-                if(id!=0&&id!=1&&id!=2&&id!=8&&id!=9&&id!=10&&id!=11) continue;
-                if(reuseGlobalContext&&id>=8U) continue;
-                entry=&promote->promoteEntry[initCount++];
-                entry->bufferId=(NvU16)id;
-                entry->gpuPhysAddr=(ULONG64)dev->GspGrContextPhysical.QuadPart+grLayout.buffers[i].offset;
-                entry->size=grLayout.buffers[i].size;
-                entry->physAttr=DRF_DEF(2080,_CTRL_GPU_INITIALIZE_CTX,_APERTURE,_NCOH_SYS)|
-                                DRF_DEF(2080,_CTRL_GPU_INITIALIZE_CTX,_GPU_CACHEABLE,_NO);
-                entry->bInitialize=TRUE;entry->bNonmapped=TRUE;
+                {
+                    NvBool add;
+                    entry=&promote->promoteEntry[initCount];
+                    if(nvx_openrm_context_init_entry(id,
+                        (NvU64)dev->GspGrContextPhysical.QuadPart+grLayout.buffers[i].offset,
+                        grLayout.buffers[i].size,
+                        reuseGlobalContext&&nvx_openrm_context_is_global(id),
+                        entry,&add)!=NV_OK) {valid=FALSE;break;}
+                    if(add) initCount++;
+                }
             }
             promote->entryCount=initCount;
             __sync_synchronize();
@@ -2330,12 +2313,15 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
        exposes that graphics channel in CHRAM slot 2; ring that channel's
        doorbell rather than borrowing channel 1 (the independent CE channel).
        Keep RM's opaque token authoritative whenever it supplies one. */
-    token=(dbcfg&0xffff0000U)|2U;
+    {
+        NvU32 flags,workToken;
+        if(!nvx_openrm_channel_identity(2U,(dbcfg>>16)&0x7fU,&flags,&workToken))
+            return FALSE;
+        token=workToken;
+    }
     dev->GspGraphicsRunlistBase=runlistBase;
     dev->GspGraphicsSubmitToken=token;
-    if(dev->Bar0Length>=0x30094)
-        VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+0x30090),token);
-    VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+runlistBase+0x90),2);
+    if(nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,token)!=NV_OK) return FALSE;
     LogStr("NVX [GR]: rang channel doorbell token=");LogHex(token);LogStr(" chid=0x2\n");
     LogStr(reuseGlobalContext?
         "NVX [GR]: application channel I2M/fence probe; rasterizer state left to Mesa.\n":
@@ -2481,7 +2467,7 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
             LogHex(instanceLo);LogStr("\n");
         }
         {
-            PULONG ramfc=(PULONG)(scratch+0xb000);
+            PULONG ramfc=(PULONG)(scratch+0xa000);
             LogStr("NVX [GR]: RAMFC userdLo=");LogHex(ramfc[0x8/4]);
             LogStr(" userdHi=");LogHex(ramfc[0xc/4]);
             LogStr(" gpBaseLo=");LogHex(ramfc[0x48/4]);
@@ -3125,11 +3111,7 @@ static BOOLEAN NvxGspSubmitUserOperation(PVOID HwDeviceExtension,ULONG64 dstVa,
     dev->GspGraphicsGPPut=(put+1)%512;
     userd[0x8c/4]=dev->GspGraphicsGPPut;
     __sync_synchronize();
-    if(dev->Bar0Length>=0x30094)
-        VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+0x30090),
-                                     dev->GspGraphicsSubmitToken);
-    VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
-        dev->GspGraphicsRunlistBase+0x90),2);
+    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,dev->GspGraphicsSubmitToken);
     dev->Nvx3dLastFence=fenceValue;
     /* A valid GPGet is always an index in the RM-allocated graphics ring.
        Treat an out-of-range value as a channel fault immediately; waiting
@@ -3583,11 +3565,7 @@ BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
     dev->Nvx3dLastFence=fenceValue;
     userd[0x8c/4]=dev->GspGraphicsGPPut;
     __sync_synchronize();
-    if(dev->Bar0Length>=0x30094)
-        VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
-                                     0x30090),dev->GspGraphicsSubmitToken);
-    VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
-                              dev->GspGraphicsRunlistBase+0x90),2);
+    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,dev->GspGraphicsSubmitToken);
 
     for(wait=0;wait<10000;wait++) {
         if(fence[0]==(ULONG)fenceValue) {
@@ -3711,12 +3689,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     dev->Nvx3dLastFence=fenceValue;
     userd[0x8c/4]=channel->Put;
     __sync_synchronize();
-    if(dev->Bar0Length>=0x30094)
-        VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
-                                     0x30090),channel->SubmitToken);
-    VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
-                              channel->RunlistBase+0x90),
-                              channel->HardwareChannelId);
+    (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->SubmitToken);
     for(wait=0;wait<50000U;wait++) {
         if(fence[0]==(ULONG)fenceValue) {
             __sync_synchronize();
@@ -3754,12 +3727,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
         LogStr(" USERD_GET=");LogHex(userd[0x88/4]);
         LogStr(" USERD_PUT=");LogHex(userd[0x8c/4]);LogStr("\n");
         __sync_synchronize();
-        if(dev->Bar0Length>=0x30094)
-            VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
-                                         0x30090),channel->SubmitToken);
-        VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+
-                                  channel->RunlistBase+0x90),
-                              channel->HardwareChannelId);
+        (void)nvx_openrm_kick(dev->Bar0MmioVirtual,dev->Bar0Length,channel->SubmitToken);
         for(wait=0;wait<50000U;wait++) {
             if(fence[0]==(ULONG)fenceValue) {
                 __sync_synchronize();
