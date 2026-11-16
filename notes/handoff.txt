@@ -1,420 +1,115 @@
-# Phase 2C handoff: Windows XP x64 OpenGL on GA104
+# Windows XP x64 OpenGL handoff
 
-Updated November 16, 2026.
+Updated November 16, 2026. Latest package: **3.0.0.235**.
 
-### `.234` physical register translation correction
+## Current status
 
-- `.233` booted and finished, but rejected every GART map with status 0x56
-  (NV_ERR_NOT_SUPPORTED). Its register accessibility check caught reads from
-  the wrong physical location, before triggering an invalidate. Thus all
-  `.233` OpenGL contexts fell back; this run did not test a working invalidate.
-- Corrected MMU object views to add OpenRM's PF virtual-register physical base
-  `DRF_BASE(NV_VIRTUAL_FUNCTION_FULL_PHYS_OFFSET)` = 0xb80000, as required by
-  `gpuGetVirtRegPhysOffset_TU102` and `GPU_GET_VREG_OFFSET`. MMU invalidate is
-  now accessed at BAR0+0xb830b0, PDB at +0xb830a0/+0xb830a4. Existing doorbell
-  views retain their existing zero offset. The host register test now models
-  the physical PF addresses, and shim/GSP host tests pass.
-- `.234` full-suite run completed (runner exit 0). Log:
-  `test_logs/v3.0.0.234-20261116-172024.log`. Host checks and XP import audit
-  passed. Recreated ChID 10 at queueVA 0x11a00000 verifies successfully;
-  another private ChID 18 also verifies. No private queue timeout or MMU
-  fault appears. First gears reports NV170, 128 frames/6s = 21.333 FPS.
-  Subsequent cube reports NV170, screens=1, 901 GPU batches, 300 frames at
-  59.6 FPS. Native clear fence/pixel readback and NVX_3D_RESULT both PASS.
-  This validates the external-PDB invalidation correction for this sequence.
-- Remaining failures: user photo `/home/sanjay/Downloads/20261116_172147.jpg`
-  shows most of the red gear missing (small red arc), blue/green gears
-  recognizable. No claim of image correctness. Depth allocation, depth clear,
-  culling/transform state and present/readback need discrimination.
-  WineD3D now creates IDirect3D9 but logs GL_OUT_OF_MEMORY and incomplete FBOs;
-  the 64-bit test exits -1073741819 (0xc0000005), and the 32-bit gears attempt
-  logs context error 183 then the same exit code. Runner exit 0 and
-  ALL_BENCHMARKS_FINISHED PASS do not mean all guest tests passed. Firmware
-  assertion count remains 1.
-- Normal-allocation obstacle is concrete: `nvx_xf86drm.c:nvx_drm_gem_new`
-  rejects all tile_flags bits except NOUVEAU_GEM_TILE_NONCONTIG and does not
-  propagate the requested memory kind to the miniport. XP patches 0023/0024
-  force WGL targets toward linear/shared GART and depth memtype=0 to avoid
-  unsupported kind requests. Restore ordinary Nouveau placement by teaching
-  the OS allocator ABI to preserve validated kinds, allocate/map the matching
-  uncompressed VRAM PTEs and support tiled target transfer/readback, then remove
-  overrides. Removing them alone currently causes allocation rejection. This
-  is an allocator/OS boundary change; leave upstream layout selection intact.
+The XP x64 miniport and Mesa Nouveau WGL ICD run on a passthrough RTX 3070. The
+bounded NVC0 test submits hardware draws, verifies green pixels by readback,
+and completes its semaphore. Standalone WGL gears has reached the `NV170`
+renderer on real hardware, but image correctness, repeat context creation,
+and the complete application path remain unresolved.
 
-### `.233` upstream external-PDB invalidate implementation
+### Latest allocation experiment: v3.0.0.235
 
-- Imported unchanged TU102 pending/commit/PDB encoding and downgrade membar
-  functions, plus GA100 invalidation-scope policy, through the existing
-  `tools/import_openrm_policy.py` selector. Submodule sources remain unchanged.
-- `nvx_openrm_invalidate_external` supplies the actual system-memory root at
-  `GspDmaPhysical + GSP_PAGE_TABLES_OFFSET`, serializes the register transaction,
-  waits before and after triggering, and rejects unavailable MMIO or timeout.
-  Uses SYS_MEMBAR, global acknowledgement and NON_LINK_TLBS like the upstream
-  PF downgrade path. Timeout propagates to the existing backing-retention path.
-- GART map/unmap and depth-kind changes now use this helper instead of treating
-  a successful GSP invalidate CONTROL reply as proof of hardware completion.
-- Host shim regression covers PDB encoding, invalidate flags, a stuck trigger,
-  timeout lock release and a subsequent successful call. GSP mock passed;
-  `.233` hardware result and corrected `.234` outcome are recorded above.
+The prior XP patches `0023` and `0024` forced WGL resources toward shared/linear
+GART storage and forced depth memory kind to zero. Those patches are no longer
+applied by the XP Mesa build scripts. Nouveau GEM requests now carry tile mode
+and `tile_flags[15:8]` memory kind across the XP DRM shim and the fixed-size
+miniport ABI. The miniport installs the requested kind in the VRAM leaf PTEs,
+invalidates the VA space once per range, and restores kind zero before freeing.
+Kinded allocations are rounded to the 64 KiB PTE granularity. GART allocations
+remain linear and reject kind/tile requests rather than silently misreporting
+placement. ABI version is now 22.
 
-### Source trace after `.232`: externally owned VASpace invalidation
+Host checks passed: `make -C src_driver check`, including the new ABI and GEM
+shim cases for kind preservation, invalid kinds, and honoring alignment. The
+Mesa submodule is clean after the build scripts restored their temporary XP
+patches. The XP import/subsystem audit passed for all packaged binaries.
 
-- Correction to the earlier run summary: the first 64-bit gears session DID
-  verify its private queue (serial line 869) and completed 103 frames in six
-  seconds (17.167 FPS, lines 1077-1079). Later recreated channels fail. The
-  subsequent GDI Generic cube does not describe that first gears session.
-- Concrete API mismatch: `nvx_disp_rpc.c:1015` creates the VASpace with
-  `NV_VASPACE_ALLOCATION_FLAGS_IS_EXTERNALLY_OWNED`. `NvxGspInvalidateVaSpace`
-  (`nvx_gsp.c:705`) sends DMA_INVALIDATE_TLB through GSP CONTROL and treats
-  its successful reply as completed invalidation.
-- In the pinned upstream, `subdeviceCtrlCmdDmaInvalidateTLB_IMPL`
-  (`gpu/mem_mgr/dma.c:829`) calls `vaspaceInvalidateTlb`. The GVAS
-  implementation (`mem_mgr/gpu_vaspace.c:2337`) obtains the root from
-  `mmuWalkGetPageLevelInfo` and only invokes the hardware HAL if it is nonnull.
-  Externally owned root commit instead stores `pExternalPDB` and returns
-  (`gpu_vaspace.c:3190`, setter at 4753). The external-aware accessor
-  `gvaspaceGetPageDirBase_IMPL:2094` explicitly handles that separate root;
-  the invalidate implementation does not use it. Thus successful CONTROL is
-  insufficient evidence that our external PDB was invalidated. This is the
-  strongest source explanation for stale translations after VA reuse, though
-  behavior inside the shipped 535 firmware has not been instrumented/proved.
-- Evidence fits: first queue VA 0x11a00000 maps physical 0x044e9000 and works;
-  recreation reuses the VA with different physical backing, then CE sees
-  mismatches in both FIFO and pushbuffer and PBDMA never fetches the probe.
-  Record actual compared words next to distinguish old backing from zeros.
-- Upstream reuse is feasible: import complete
-  `kgmmuCheckPendingInvalidates_TU102`, `kgmmuSetPdbToInvalidate_TU102`, and
-  `kgmmuCommitTlbInvalidate_TU102` from `gpu/mmu/arch/turing/kern_gmmu_tu102.c`
-  using the existing source-selection pattern. Supply XP MMIO, timeout,
-  physical-PDB and PF adapters. Preserve GA100 scope selection and TU102
-  PTE_DOWNGRADE membar/ack handling; validate register accessibility and wait
-  for hardware completion before allowing old backing/VA reuse. Importing
-  only the full VASpace wrapper would retain the wrong ownership assumption
-  and additionally require the NVOC/MMU-walker object graph.
-- Analysis only in this revision; no additional hardware run.
+VFIO log: `test_logs/v3.0.0.235-20261116-174247.log` (`vm_serial.log` points to
+the latest run). Hardware evidence:
 
-### `.232` display readback fix and suspect audit
+- The first 64-bit gears run selected a non-generic format, reported
+  `GL_RENDERER = NV170`, and completed 106 frames in 6 seconds (17.667 FPS).
+- The miniport logged normal Nouveau PTE-kind installation for VRAM allocations
+  (kinds 6 and 3) and reset those ranges on free. No image capture was made, so
+  this does not prove the gears are drawn correctly. The user reports that the
+  gears looked the same after this allocation change; the missing/red gear
+  geometry is still present. Treat this experiment as an allocation-path
+  validation, not a visual correctness fix.
+- `[NVX_3D_RESULT] PASS` and `GR RESULT: hardware triangle draw, green pixel
+  readback, and semaphore completed successfully!`.
+- The normal framebuffer heap could not fit Nouveau's 0x04080000-byte TLS BO;
+  it fell back to GART, with placement reported as GART.
+- The full runner exited with the hardware-OpenGL gate failing. Antigravity's
+  separate audit reports `[OPENGL_RESULT] SOFTWARE` in one launch and fails to
+  create the ICD context (`error=126`) in another. A later gears launch does
+  reach `NV170`, but a subsequent context attempt fails with error 183. The
+  64-bit test process exits with `0xC0000005`; D3D9 reports no HAL / returns
+  unavailable. These are separate failures from the successful first gears
+  render and bounded NVC0 test.
+- The log reports one firmware assertion. Display verification shows both
+  heads active. The full suite is **not passing**.
 
-- Fixed confirmed boot instance corruption: display initialization now calls
-  `NvxGspVerifyZeroRange` in `nvx_ce.c`. It reads through scratch `+0xe000`
-  while holding both the shared scratch and CE locks through CPU inspection;
-  the live `+0xa000` instance/RAMFC page is preserved. Added a host regression
-  that seeds that page before display initialization and checks every byte
-  afterward. Host checks and XP package/import audit pass.
-- PCIe-flush suspect narrowed: generated `g_kern_bus_nvoc.c` lines 841-849
-  selects `kbusFlushPcieForBar0Doorbell_GH100` only on GH100. GA104 gets the
-  NV_OK no-op (`g_kern_bus_nvoc.h:2170`). Do not add the Hopper flush as an
-  asserted Ampere fix. CPU barriers already precede USERD publication/kick.
-- RAMFC descriptor audit: upstream `kchannelAllocMem_GM107` allocates and
-  zeroes a separate instance, with RAMFC a 512-byte subdescriptor at offset
-  zero. The XP descriptor's 4KB instance/512-byte RAMFC arrangement matches;
-  it is the display alias that violated the instance lifetime. Channel backing
-  is zeroed before GPFIFO ALLOC; PTE map/unmap waits for RM TLB invalidation
-  before reuse. These checks do not establish GPU translation correctness.
-- Added timeout-only `GR-CLIENT-MAP` diagnostics: with the failed queue still
-  owned, CE reads its FIFO entry and seven-dword probe from GART and compares
-  against CPU backing. This checks VA visibility without rewriting the queue.
-- Teardown retains STOP/EVICT/channel FREE/TSG FREE/ID release. Upstream GR
-  mapping cleanup is conditional on client-RM context allocation and uses a
-  full mapping graph. It cannot safely be replaced by a guessed extra FREE or
-  unconditional unmap in this shim. ChID reuse and the extra runlist kick
-  remain under investigation; neither was hidden with ID quarantine/delays.
-- `.232` full VFIO suite booted after automatic retries and completed. Host
-  checks and XP package/import audit passed. GPU copy/clear paths and the
-  boot-channel hardware triangle/fence/readback passed. The serial log reports
-  firmware assertion count 1; the suite summary does not report a new MMU
-  fault during this run.
-- The private channel still fails queue verification on ChID 10. New
-  `GR-CLIENT-MAP` diagnostics confirm CE can copy from both GART ranges, but
-  the GPU-visible bytes differ from the CPU backing: 4/8 bytes at FIFO offset
-  `+0x9000`, and 18/28 bytes at pushbuffer offset `+0xf000`. At timeout,
-  USERD GET/PUT and GP_FETCH are all 1 while PB_FETCH/GET/PUT remain 0. This
-  narrows the next trace to the mismatching bytes and CPU/GPU mapping/cache
-  visibility; it does not yet distinguish stale PTEs from wrong physical
-  backing or incomplete publication.
-- Nouveau screen creation still fails at FIFO channel creation. OpenGL reports
-  GDI Generic and 300 software frames at 61 FPS (`gpu_batches=0`); native
-  Nouveau clear cannot open the owner's channel. The bounded miniport 3D test
-  still passes its owned hardware triangle, but the overall 3D suite fails and
-  Direct3D 9 has no HAL. WGL context creation still returns error 183.
-- Log: `test_logs/v3.0.0.232-20261116-170052.log`; `vm_serial.log` points to
-  this run. No claim that full OpenGL acceleration works.
+## Issues to resolve
 
-### Source trace after `.231`: confirmed boot instance corruption
+1. **Visual correctness of gears:** the normal-allocation experiment did not
+   change the user's visual result. Capture the actual window or GPU readback
+   while gears runs and compare red/green/blue gear coverage. The prior user
+   image showed most of the red gear missing. Renderer string and frame count
+   alone do not prove correct geometry/depth/presentation. Next trace vertex,
+   index, depth, and color-target state/submission through the draw and swap;
+   do not continue treating allocation kind as the leading explanation without
+   evidence from a captured target.
+2. **Context recreation:** later WGL context/channel creation still fails with
+   error 183. Trace WGL ICD context allocation/deletion, channel lease close,
+   and resource cleanup across sequential applications; do not attribute this
+   to the initial successful gears session.
+3. **Antigravity OpenGL audit:** its launch can use software rendering or fail
+   with error 126 before creating a context. Determine why its selected pixel
+   format / ICD load differs from the standalone gears path, then ensure the
+   test reports the renderer for the same successful context.
+4. **D3D9:** current package reports no Direct3D HAL and the 64-bit test later
+   crashes. This is not covered by the OpenGL allocation change.
+5. **VRAM capacity:** the 128 MiB VRAM aperture does not fit the 4 MiB TLS
+   allocation after current reservations, so the shim retries it in GART.
+   Keep that fallback truthful and validate other tiled or kinded large BOs
+   cannot accidentally fall back to incompatible GART storage.
+6. **Normal allocation validation:** the host GEM test proves ABI propagation,
+   but the VFIO run's observed kinds are 3 and 6. Confirm color resources with
+   kind 0xfe are requested, mapped, used by rendering, and read back correctly.
 
-- Confirmed overlapping GPU writes: `nvx_gsp.c:NvxGspCreateGraphicsProbe`
-  assigns the boot GR instance/RAMFC to scratch `+0xa000` (line 1556).
-  Later `nvx_disp_rpc.c:NvxGspInitDisplayChannels` reads 16 pages of cleared
-  display instance memory into exactly scratch `+0xa000..+0xafff` (lines
-  174-176). This overwrites the live GR instance with zeroes. In `.231`, the
-  boot GR triangle passes at log line 478, display instance initialization
-  completes at 651, and a subsequent boot submission times out and receives
-  ChID 2 RC 31. This is a concrete allocation-lifetime bug and a strong causal
-  explanation for the later boot failure; correction still needs hardware
-  validation. Upstream `kchannelAllocMem_GM107` owns a separate instance
-  allocation and RAMFC subdescriptor; display readback cannot reuse that live
-  allocation. Use dedicated, lock-protected readback backing for display.
-- `nvx_ce.c:NvxGspVerifyGrBacking` also uses `+0xa000`, but its call precedes
-  `NvxGspCreateGraphicsProbe` in `NvxGspCreateObjects`. That use is not the
-  same post-allocation overwrite. Account for call order when auditing aliases.
-- The private client recreation failure is independently established:
-  `.231` frees ChID 10, recreates it successfully at the RPC level, then fails
-  `NvxGrVerifyClientQueue` before its seven-dword SET_OBJECT/semaphore probe
-  completes. `NvxWinsysOpenNouveauChannel` consequently fails and xf86drm
-  reports `channel_result=2`; Mesa screen creation fails before application
-  shaders/draws. The private instance has different backing from boot scratch,
-  so the display overwrite does not by itself prove the cause of this stall.
-- Correct the earlier interpretation of `.230`: the paired FIFO-data EHeap
-  only changes CPU bookkeeping; its association is not consumed by hardware
-  setup or the kick. Its presence did not establish a channel-recreation fix.
-  Upstream also supports normal ChID reuse; merely recycling ID 10 is not a bug.
-- Concrete submission difference: upstream `channelFillGpFifo` in
-  `gpu/mem_mgr/channel_utils.c` writes GPFIFO, flushes CPU WC stores, writes
-  USERD PUT, flushes again, and calls `kbusFlushPcieForBar0Doorbell_HAL` before
-  ringing. XP uses CPU barriers and `nvx_openrm_kick`, which additionally
-  writes `runlistBase+0x90` and has no equivalent explicit PCIe flush in that
-  path. Applicability of the flush depends on mapping/cache attributes; this
-  remains a hypothesis, not a proven cause.
-- Upstream `kchannelDestruct_IMPL` sends channel FREE, detaches GR mappings,
-  releases HAL resources/group membership, then releases ChID. XP performs
-  STOP/EVICT/FREE and releases its backing but does not implement the full
-  host mapping graph. Audit this together with fresh/reused instance contents
-  and PTE visibility. `RAMFC_CHID=0` is an XP diagnostic at a hardcoded offset,
-  not sufficient proof that RM failed to assign the requested hardware ID.
-- This was source/log analysis only; no driver changes or new hardware run.
+## Next steps
 
-### `.230` / `.231` upstream ChID lifecycle and hardware tests
+1. Add focused logging of each GEM_NEW request/result (domain, size, alignment,
+   tile mode, kind) and correlate allocation IDs with the WGL target/depth
+   resources. Do not log every small GART allocation in the serial stream.
+2. Capture an image or readback from the first successful `NV170` gears run;
+   compare target and depth surfaces before/after draw and swap.
+3. Trace the second context's error 183 against `DrvCreateContext`/`DrvDeleteContext`,
+   channel open/close tokens, and resource ownership.
+4. Fix the Antigravity ICD load/context path and keep the strict hardware gate
+   enabled for the next hardware run.
+5. Address D3D9 separately after the OpenGL context and image path are stable.
 
-- `NvxGspSubmitNvc0NativeClear` now requires a ready channel owned by the
-  request's `ClientToken`; cross-client channel borrowing remains removed.
-  `test_gpu_accel.c` opens a channel for each native-clear owner, preserves
-  explicit tokens in its ExtEscape wrapper, and frees the 64x16 target under
-  the same owner.
-- `nvx_openrm_containers.c` now mirrors OpenRM's `pGlobalChIDHeap` and
-  `pFifoDataHeap`: each ChID is allocated at the same fixed offset in both
-  upstream EHeaps; channel association is set on allocation, cleared on free,
-  and both entries are released. Previously only the ChID heap was modeled.
-- `.230` command: `NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1
-  NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1
-  ./test/test_full_driver.sh`. Host checks, XP package/import audit, and VFIO
-  boot passed. A second WGL session opened ChID 18 and the explicitly owned
-  native clear passed fence and readback (`[NVX_NVC0_NATIVE_CLEAR_RESULT] PASS`).
-  Gallium logged `Native Nouveau Gallium pipe_screen created`, initialized an
-  NVC0 context, and advanced 300 frames at about 60 FPS with `gpu_batches=90`
-  per 30-frame interval. Later boot-channel submission faulted and marked the
-  client channels faulted; a separate WGL audit failed ICD context load (error
-  126), and the runner rejected native submissions. The native clear itself
-  passed, but the old probe freed its target with the default test token; `.231`
-  corrected that cleanup ownership. Log:
-  `test_logs/v3.0.0.230-20261116-163045.log`.
-- `.231` corrected the native-clear test's free-token mismatch and reran the
-  full suite. Host checks and XP package/import audit passed; VFIO boot and
-  graceful shutdown passed. The first gears session used ChID 10 successfully,
-  but the next client reused ChID 10 and again timed out in private-queue
-  verification (USERD GET/PUT=1, GP_FETCH=1, PB_FETCH/GET/PUT=0). Mesa reported
-  `channel_result=2`, `screens=0`, `gpu_batches=0`; `[OPENGL_RESULT] SOFTWARE`,
-  WGL context error 183, and `[TEST_COMPLETE] Status: FAIL`. The paired
-  FIFO-data heap is an upstream fidelity fix, but it did not eliminate the
-  intermittent same-ChID queue recreation stall. Log:
-  `test_logs/v3.0.0.231-20261116-163640.log`; `vm_serial.log` points to it.
-- In `.231`, the owned native-clear result failed because the second client's
-  channel never opened. A later legacy boot-channel clear timed out and raised
-  FIFO MMU RC 31 on ChID 2; channel-open failures and screen fallback preceded
-  this. Firmware assertion count remained one. Preserve the strict owner check.
-- **Next:** compare upstream lifecycle beyond the paired heaps: ChID retirement
-  and references, FIFO instance/RAMFC allocation and initialization, TSG/channel
-  destruction order, and fresh queue GART mappings. Capture create/free RPC and
-  BAR0/runlist/CHRAM state before and after ChID 10 reuse. Separately trace why
-  the legacy boot channel faults with FIFO MMU RC 31; it invalidates client
-  channels after native screen creation. Frame counters alone do not prove
-  correct GPU rendering; retain GPU-batch, fence, and framebuffer-readback
-  checks.
+## Key files
 
-### `.228` channel-recreation fix and hardware result
-
-- Restored `GPU_EVICT_CTX` after STOP_CHANNEL and before channel FREE in `NvxGrDestroyClient`. The local `.227` edits had replaced this RPC with `c->Promoted=FALSE`, which only changed host bookkeeping. The restored sequence matches `open-gpu-kernel-modules/src/nvidia/src/kernel/rmapi/nv_gpu_ops.c:nvGpuOpsStopChannel`. Failed eviction retains the promoted state and backing for retry. This also restores behavior present in `.225`; that earlier version still had failures, so eviction alone is not a proven cure for recreation.
-- Fixed `Nvx3dOpenGraphicsClientLocked` ignoring a failed `Nvx3dCloseGraphicsClientLocked`: now it returns failure before allocating or replaying backing for a still-owned channel. This prevents continuing reopen after unconfirmed retirement.
-- The `.228` VFIO run tested these changes after the earlier `.227` worktree edits. Host checks, driver/display builds and XP import audit passed. Attempt 1 had no serial activity; attempt 2 booted. Log: `test_logs/v3.0.0.228-20261116-154541.log`; runner output is in the active test command session.
-- 64-bit gears selected ICD pixel format 63, reported NV170, rendered 131 frames in 6 seconds (21.8 FPS), and closed with an acknowledged channel FREE. The user-observed missing gears parts remain a rendering correctness issue; the log has no image capture.
-- The next client again reused ChID 10 and failed private queue verification twice. At timeout USERD GET/PUT were 1, PBDMA GP_FETCH was 1, PB_FETCH/GET/PUT were 0, and the backing's RAMFC_CHID diagnostic was 0. Cleanup then logged channel FREE acknowledgement. The native clear and OpenGL audit failed; OpenGL fell back to GDI Generic, and 32-bit gears still failed context creation with error 183. Suite result is `[TEST_COMPLETE] Status: FAIL`.
-- This run proves restoring EVICT and refusing reopen after failed teardown did not fix the recreated-channel queue stall. Focus the next code trace on how RM initializes/rebinds the reused ChID's instance/RAMFC and how the first pushbuffer VA is consumed after channel FREE/reallocation. Do not treat GP_FETCH=1 as proof that PBDMA fetched or executed the pushbuffer.
-- Version identity mismatch: the package INF and archive are `.228`, but the miniport serial banner still says `3.0.0.5` (`src_driver/nvxmp.c`). The binary was built and packaged by the `.228` run, but update the embedded banner on the next revision so the guest log identifies it consistently.
-
-## 1. Latest Run & Artifacts (v3.0.0.234)
-### Upstream comparison after `.228`
-
-- Highest-priority custom boundary: `nvx_gr_clients.c:NvxGspOpenClientChannel` builds physical context initialization and VA-only PROMOTE requests itself. Upstream `kernel_graphics_context.c` tracks mappings/refcounts with VA_LIST and detaches/unmaps through `shrkgrctxDetach_IMPL` (around 3530), subject to `kgrctxShouldCleanup`. XP has no equivalent host mapping ownership graph. Shared global backing plus private context backing needs explicit ownership accounting; a generic EVICT is not equivalent to all host destructor work. This is a confirmed architectural difference, not a proven explanation of the stalled queue.
-- `nvx_openrm_shim.c:nvx_openrm_channel_memory` hardcodes descriptor sizes, offsets and cache attributes. Upstream `_kchannelSendChannelAllocRpc` (kernel_channel.c around 2421) obtains these from real FIFO instance/USERD/TSG memory descriptors. The physical-descriptor RPC itself is upstream behavior for GSP clients; supplying descriptors is not inherently a divergence. Reuse allocator/HAL sizing and descriptor construction where feasible, with XP supplying the actual coherent allocations.
-- `nvx_openrm_policy.c:nvx_openrm_kick` calls the imported TU102 doorbell implementation, then adds a custom MMIO write to runlistBase+0x90. That extra write is not part of the compared upstream helper. A previous doorbell-only candidate failed boot, so removing it blindly is not a validated fix; audit the physical BAR0 versus upstream virtual-register mapping contract first.
-- `nvx_openrm_containers.c` now mirrors the ChID and FIFO-data heaps, but is not the complete CHID_MGR. Upstream also clears FIFO data, drops isolation IDs and supports retained ID references. The paired heaps and `.232` mapping audit did not stop the ChID 10 queue stall; `.232` shows byte mismatches in both GPU-visible queue regions.
-- Native clear now requires its own ready client channel, and its test explicitly opens the owner channel. The legacy `NvxGspSubmitUserOperation` path still targets boot GR and is associated with the later ChID 2 FIFO MMU fault; changing native-clear ownership does not eliminate all boot submissions. Route diagnostics through an owned client lease and keep one submission implementation.
-- Practical reuse: continue importing self-contained OpenRM policy/HAL functions and containers with real XP OS adapters. Full `kchannelConstruct`/destruct, GR mapping and memory ownership routines require the connected NVOC/resource-server/memdesc/VASpace objects; the current small policy views cannot safely stand in for that object graph. Do not claim that a wrapper around existing custom code ports those subsystems.
-
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.234-20261116-172024.log` (active symlink: `vm_serial.log`)
-- **Previous Run Log**: `test_logs/v3.0.0.230-20261116-163045.log`
-- **Target VM**: `winxp_x64.qcow2` (Windows XP Professional x64 Edition, NT 5.2 SP2)
-- **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO pass-through.
-- **Distribution Package**: `dist_full/` (driver `nvxmp.sys`, `nvxdisp.dll`, `nvxogl64.dll`, `nvx.inf`, `install.bat`, `wglgears.exe`, `test_gpu_accel.exe`)
-
----
-
-## 2. Current Status & Implementation (latest test package v3.0.0.234)
-
-### What Was Implemented in v3.0.0.227 and v3.0.0.228:
-1. **Native Clear Ownership and OpenRM ChID heaps**:
-   - `src_driver/nvx_gsp.c`: Native clear requires the request owner's ready channel; it never borrows another client or the boot channel.
-   - `src_driver/nvx_openrm_containers.c`: ChID and FIFO-data EHeaps allocate/free paired offsets, matching upstream `kfifoChidMgrAllocChid_IMPL` and `kfifoChidMgrFreeChid_IMPL`. The `.232` VFIO run still reproduces the ChID 10 queue stall; CE readback shows data mismatches at the GPU-visible FIFO and pushbuffer addresses.
-2. **`wglgears` Hardware Pixel Format Selection**:
-   - `test/3d_tests/glxgears_main.cpp`: Updated the candidate pixel format loop to scan from `fmt = 1` up to `maxScan` (`totalFormats` or 100), rather than starting at format 37. This prevents skipping hardware-accelerated Mesa formats (formats 1..36).
-   - Added dynamic load fallback for `nvxmesa.dll` when `nvxogl64.dll` is queried.
-   - Recompiled `wglgears.exe` (x86_64) and `wglgears32.exe` (i686), updating `dist_full/wglgears.exe`.
-3. **Removal of Invalid WOW64 32-bit to 64-bit Registry Mappings**:
-   - `dist_full/nvx.inf`, `dist_full/install.bat`, and `test/update_disk_driver_user.sh`: Removed `HKLM\Software\Wow6432Node\...` entries that registered the 64-bit `nvxogl64.dll` for 32-bit processes, eliminating `LoadLibrary` error 126 (`ERROR_MOD_NOT_FOUND`).
-   - Added explicit cleanup in `install.bat` to purge stale `Wow6432Node` OpenGL driver keys.
-4. **Client Channel Teardown on Reopen (Error 183 Prevention)**:
-   - `src_driver/nvxmp.c`: In `Nvx3dOpenGraphicsClientLocked()`, added logic to cleanly tear down and recycle any existing client channel instance that is not in a ready state before allocating fresh backing memory, preventing session reuse collisions and error 183 (`ERROR_ALREADY_EXISTS`).
-   - `.228` restores the OpenRM `GPU_EVICT_CTX` step after STOP_CHANNEL and blocks reopen if the prior channel cannot be retired. Hardware testing shows the subsequent client's queue still stalls, so these changes are not a complete fix.
-5. **Host Unit & Regression Suites**:
-   - `make -C src_driver check`: Passes all 12 test suites (3D ABI, winsys, xf86drm, GR context, display, MMU, seq, RPC, firmware, GSP host mock, VBE, OpenRM shim, VBIOS).
-
----
-
-## 3. Previously Identified Issues (Prior to v3.0.0.227)
-1. **FIFO MMU Fault / Unbound Instance Block on Native Clear**:
-   - Observed in `.220` through `.226`: In `test_gpu_accel`, ad-hoc tokens without leased channels triggered `NvxGspSubmitNvc0NativeClear()` falling back to boot ChID 2. Because client ChID 10 was promoted via `GPU_PROMOTE_CTX`, submitting to ChID 2 triggered an MMU fault on GPFIFO (`0x10009000`, type 4 `FAULT_UNBOUND_INST_BLOCK`, RC 31), causing subsequent channel quarantine.
-2. **`wglgears` Selecting GDI Generic**:
-   - Observed in `.225` and `.226`: `glxgears_main.cpp` started searching at format 37. When Windows XP GDI returned format 3 (`PFD_GENERIC_FORMAT`), the format scan completely skipped hardware Mesa formats 1..36, falling back to GDI Generic software emulation.
-3. **32-bit WOW64 Context Creation Failure (Error 126)**:
-   - Observed when running 32-bit OpenGL applications: `Wow6432Node` pointed to 64-bit `nvxogl64.dll`, causing PE architecture mismatch on `LoadLibrary`.
-4. **Context Recreation Stalls & Error 183**:
-   - Observed when reopening WGL contexts or creating subsequent client channels after teardown without complete backing resource reclamation.
-5. **Scratch Page Aliasing**:
-   - Identified in `.224` / `.225`: Runtime CE push slots at `scratch+0xd000` overlapped the boot GR channel's RM method buffer (`scratch+0xc000..0xdfff`), and upload diagnostic readbacks used `scratch+0xa000` (GR RAMIN). Fixed by relocating CE completion fences to `+0x3400` and diagnostic readbacks to `+0xe000`.
-
-*(Note: The latest test execution log is available at `test_logs/v3.0.0.227-20261116-150714.log` for reader inspection and evaluation.)*
-
----
-
-### Latest `.227` run result and visual correctness
-- The first 64-bit `wglgears` process selected pixel format 63 (`PFD_GENERIC_FORMAT=NO`), loaded Mesa, reported `GL_RENDERER = NV170`, and completed 121 frames in 6 seconds (20.2 FPS). It exited successfully and the log records client-channel FREE acknowledgement afterward. This establishes that the gears process reached the hardware ICD path; it does **not** establish correct image output.
-- User observation: the hardware gears looked strange, with parts missing. Treat this as an active rendering-correctness failure even though the renderer string is `NV170`. The latest serial log has no screenshot or gears framebuffer readback, so it cannot identify which geometry or pixels are missing. Next validation should capture the actual gears window/framebuffer and correlate it with the gear draw batches, buffer references, and completed fences.
-- Keep this separate from the Antigravity GPU Accel test later in the same log: that process reports GDI Generic, `screens=0`, `gpu_batches=0`, and fails its GPU pixel tests. It is a separate WGL/pixel-format path and does not negate the earlier gears ICD selection. The 32-bit gears attempt still fails context creation with error 183.
-- `.227`'s pixel-format scan appears to correct the specific 64-bit gears fallback seen in `.225/.226`; it does not yet correct the Antigravity format selection or prove the gears are rendered completely. `.227` also changes native-clear routing, but the suite still reports native-clear failure, so that path remains unresolved.
-- Source recheck: current `nvx_ce.c` runtime CE push slots use `scratch+0x10000`, so the earlier statement that they still use `+0xd000` was stale. The older alias is historical; do not treat it as the current cause without checking the packaged binary/build identity.
-
-### Code trace of the later GDI Generic fallback
-- Latest serial lines 1089 onward acknowledge the first gears channel FREE, then allocate a new channel using ChID 10 and queue VA `0x11a00000` again, with different physical backing. Both creation attempts reach `NvxGrVerifyClientQueue` but time out (lines 1344/1433): USERD GET/PUT=1, GP_FETCH=1, PB_FETCH/GET/PUT=0, completion fence absent. Thus explicit FREE did execute; successful channel recreation is still unresolved.
-- `src_driver/nvx_gr_clients.c:NvxGrVerifyClientQueue` builds SET_OBJECT plus a release semaphore in private backing, publishes FIFO[0], updates PUT and kicks. Its missing fence makes `NvxGspOpenClientChannel` fail at `private queue fence verification`; `src_driver/nvxmp.c:Nvx3dOpenGraphicsClientLocked` returns failure to CHANNEL_OPEN.
-- `mesa_patches/nvx_winsys.c:NvxWinsysOpenNouveauChannel` consequently returns 0. `mesa_patches/nvx_xf86drm.c:nvx_drm_channel_alloc` records `LastChannelAllocResult=2` and returns EBUSY. That diagnostic value is a local shim result, not an OpenRM status. Mesa logs `Nouveau FIFO channel creation failed`; the test subsequently chooses generic format 3 and reports GDI Generic. `test/test_gpu_accel.c` accepts the format without rejecting PFD_GENERIC_FORMAT before SetPixelFormat.
-- This traces the fallback to a kernel channel-recreation failure before the later bounded boot-clear MMU fault. It does not prove why the new queue fails: GET/GP_FETCH progress alone does not establish that its intended pushbuffer was fetched. Next audit must compare fresh/recreated instance/RAMFC, queue translation, context promotion and scheduler state. Missing visible gears parts remain a separate unresolved correctness symptom.
-
-## 4. Design Architecture
-
-The NVX driver stack enables hardware-accelerated 2D and 3D graphics on Windows XP Professional x64 Edition running on modern Ampere (GA104) hardware. The stack consists of a dual-head XDDM display driver, an NT 5.2 miniport driver hosting an OpenRM GSP client, and a customized Mesa Gallium user-mode driver stack.
-
-```
-+-----------------------------------------------------------------------------------------+
-|                                    USER MODE (Win32)                                    |
-|                                                                                         |
-|  [3D Apps: wglgears, test_gpu_accel, WineD3D]             [GDI / Desktop Applications]  |
-|                         |                                                |              |
-|                         v                                                v              |
-|        [OpenGL32.dll / WOW64 OpenGL32.dll]                         [GDI32.dll]          |
-|                         |                                                |              |
-|                         v                                                v              |
-|          +-------------------------------+                      +------------------+    |
-|          |    nvxogl64.dll (Mesa ICD)    |                      |   nvxdisp.dll    |    |
-|          |   - Gallium WGL Frontend      |                      |   (XDDM Display  |    |
-|          |   - Gallium NVC0 Driver       |                      |      Driver)     |    |
-|          |   - libdrm_nouveau emulation  |                      +------------------+    |
-|          |     (nvx_xf86drm, nvx_winsys) |                               |              |
-|          +-------------------------------+                               |              |
-|                         |                                                |              |
-+-------------------------|------------------------------------------------|--------------+
-|                         | IOCTLs (Direct GDI / DeviceIoControl)          | EngDeviceIOCtl
-|                         v                                                v              |
-+-----------------------------------------------------------------------------------------+
-|                                   KERNEL MODE (Ring 0)                                  |
-|                                                                                         |
-|                                     nvxmp.sys                                           |
-|       +-----------------------------------------------------------------------+         |
-|       | XDDM Miniport Driver Core (HwVidInitialize, HwVidStartIO, Interrupt) |         |
-|       | - 3D Client Session Manager (IOCTL_NVX_3D_CLIENT_INIT/CLOSE)          |         |
-|       | - BO / Buffer Allocator (VRAM & GART Virtual Memory Management)       |         |
-|       | - NVC0 Batch Validator & Ring Buffer Dispatcher                       |         |
-|       +-----------------------------------------------------------------------+         |
-|                                           |                                             |
-|                  +------------------------+-----------------------+                     |
-|                  v                                                v                     |
-|       +-----------------------+                       +-----------------------+         |
-|       |   Display Subsystem   |                       |  GSP Firmware Engine  |         |
-|       | - Dual-Head RPC       |                       | - Message Queue (MSGQ)|         |
-|       |   (Head 0 & Head 1)   |                       | - Channel Allocation  |         |
-|       | - Modeset & Scanout   |                       | - GPU VA MMU & GART   |         |
-|       | - VBE DMT Fallback    |                       | - Work Submission     |         |
-|       +-----------------------+                       +-----------------------+         |
-|                  |                                                |                     |
-+------------------|------------------------------------------------|---------------------+
-|                  v                                                v                     |
-|       +-----------------------------------------------------------------------+         |
-|       |                 NVIDIA GeForce RTX 3070 (GA104 Hardware)              |         |
-|       | - Display Core (Cross-head Scanout, 2560x1440 DMT)                    |         |
-|       | - GSP RISC-V Core (gsp_ga104.bin firmware execution)                  |         |
-|       | - Engine subchannels: 0=3D (C797), 1=Compute, 2=P2MF/M2MF, 4=CE       |         |
-|       +-----------------------------------------------------------------------+         |
-+-----------------------------------------------------------------------------------------+
-```
-
-### Key Architectural Layers
-
-1. **User-Mode OpenGL ICD (`nvxogl64.dll`)**:
-   - Built from Mesa 27.0.0-devel using MinGW-w64 targeting NT 5.2.
-   - Includes Mesa's native Gallium WGL frontend and `nvc0` driver.
-   - Emulates the Linux DRM/KMS Nouveau interface in user mode using `nvx_xf86drm.c`, `nvx_winsys.c`, and `nvx_nouveau_*.c`.
-   - Converts Gallium pipe operations into user buffer leases and NVC0 pushbuffer command packets forwarded directly to the miniport driver via `IOCTL_NVX_3D_SUBMIT_BATCH`.
-
-2. **Kernel Miniport Driver (`nvxmp.sys`)**:
-   - Implements standard Windows XP Video Port (XDDM) interfaces.
-   - Manages an internal GSP firmware runtime derived from open-gpu-kernel-modules, executing RISC-V GSP firmware (`gsp_ga104.bin`).
-   - Implements GPU virtual address space (GART and VRAM) management, channel leasing, and fence tracking.
-   - Validates NVC0 pushbuffers in kernel mode prior to writing to the GSP ring buffer, preventing GPU faults and illegal subchannel assignments.
-
-3. **Display Subsystem (`nvxdisp.dll` & `nvx_disp_rpc.c`)**:
-   - Provides 2D acceleration (solid fills, screen-to-screen copies via 2D and Copy Engines).
-   - Manages dual-head display hardware (Head 0 and Head 1) using GSP display RPC commands (`NvxNativeSetSecondaryScanout`).
-   - Bridges fallback VBE INT10 mode tables with full DMT mode tables up to 2560x1440 and 4K.
-
----
-
-## 5. Relevant Files & Code Locations
-
-### 1. Kernel-Mode Miniport Driver (`src_driver/`)
-- **`src_driver/nvxmp.c`**: Core driver entry, XDDM callbacks (`HwVidInitialize`, `HwVidStartIO`), 3D IOCTL dispatchers, buffer lifecycle management (`Nvx3dAllocBuffer`, `Nvx3dFreeBuffer`), client session open/close, GART page reclamation, and batch submission.
-- **`src_driver/nvx_gsp.c`**: Host-GSP communication, command message queue (MSGQ), channel allocation, pushbuffer kick-off (`NvxGspSubmitNvc0Batch`), native clear execution (`NvxGspSubmitNvc0NativeClear`), and release fence tracking.
-- **`src_driver/nvx_gr_clients.c`**: Graphics client channel allocation, initialization, promotion (`GPU_PROMOTE_CTX`), teardown, and channel lookup (`NvxGspFindAnyReadyClientChannel`).
-- **`src_driver/nvx_ce.c`**: Copy Engine routines, runtime uploads/downloads, staging synchronization, and completion fences.
-- **`src_driver/nvx_disp_rpc.c`**: Dual-head display RPC controls, scanout configuration, EDID parsing, and secondary head management (`NvxNativeSetSecondaryScanout`).
-- **`src_driver/nvx_gr_context.c` / `nvx_gr_context.h`**: GART heap management (`NvxGartReserve`, `NvxGartRelease`) and GPU 3D graphics context structures.
-- **`src_driver/nvx_3d_abi.h`**: Public user/kernel interface definition: IOCTL codes (`IOCTL_NVX_3D_*`), buffer structures, batch headers, and kernel pushbuffer validator logic (`Nvx3dValidateNvc0ObjectBindingsEx`).
-- **`src_driver/nvx_mmu.c`**: Page directory and page table structure management for Ampere MMU.
-
-### 2. User-Mode Display Driver (`src_disp/`)
-- **`src_disp/nvxdisp.c`**: XDDM display driver entry points (`DrvEnableDriver`, `DrvEnablePDEV`, `DrvCompletePDEV`).
-- **`src_disp/opengl.c`**: Driver escape handling (`DrvEscape`) for OpenGL DDI discovery and ICD binding.
-- **`src_disp/screen.c`**: Mode enumeration, desktop surface allocation, and dual-monitor coordination.
-- **`src_disp/blt.c`**: Accelerated 2D blits, color fills, and copy-engine offload.
-
-### 3. User-Mode Mesa Gallium & DRM Compatibility (`mesa_patches/`)
-- **`mesa_patches/nvx_xf86drm.c`**: Emulated `libdrm` interface for Windows XP x64, translating DRM GEM allocations and pushbuffer flushes to Windows IOCTLs.
-- **`mesa_patches/nvx_winsys.c`**: Nouveau winsys implementation connecting the Gallium `pipe_screen` to the emulated DRM device.
-- **`mesa_patches/0031-nouveau-xp-use-m2mf-linear-copy.patch`**: Diverts `copy_data` to `nvc0_m2mf_copy_linear` (Subchannel 2) to eliminate CE/P2MF hazards on XP.
-- **`mesa_patches/0030-nouveau-xp-direct-linear-transfer-map.patch`**: Permits direct linear transfer maps for staging resources.
-- **`mesa_patches/0001-xp-win32-shims.patch`**: Core NT 5.2 / Win32 portability shims and compatibility overrides across Mesa.
-- **`mesa_patches/0002-nvx-gallium-bridge.patch`**: WGL ICD bridge export (`DrvCopyContext`, `DrvCreateContext`, `DrvSetContext`, etc.).
-
-### 4. Build, Packaging, and Test Harness (`test/` & `dist_full/`)
-- **`test/3d_tests/glxgears_main.cpp`**: 64-bit and 32-bit standalone WGL gears test utility.
-- **`test/test_full_driver.sh`**: Compiles driver components, verifies import tables, updates the guest disk image, and launches the QEMU/KVM VFIO guest.
-- **`test/update_disk_driver_user.sh`**: Mounts guest disk image via guestmount and updates system binaries and registry keys.
-- **`dist_full/nvx.inf`**: Windows XP setup information file registering driver services, display resolution defaults, and 64-bit OpenGL ICD registry entries.
-- **`dist_full/install.bat`**: Deployment batch script for installing driver and configuring registry inside the VM.
+- `mesa_patches/nvx_xf86drm.c`: GEM_NEW domain/tile/kind translation and
+  truthful placement response.
+- `mesa_patches/nvx_winsys.c`, `mesa_patches/nvx_nouveau_bo.c`: XP BO ABI
+  validation and allocation forwarding.
+- `src_driver/nvx_3d_abi.h`: version 22 fixed-size allocation ABI and
+  validation.
+- `src_driver/nvxmp.c`: RM VRAM/GART allocation lifecycle and PTE-kind setup,
+  reset, and cleanup.
+- `src_driver/nvx_gsp.c`, `src_driver/nvx_gsp.h`: external VRAM PTE-kind range
+  updates and MMU invalidation.
+- `test/apply_mesa_xp_patches.sh`, `test/build_mesa_xp64.sh`: the normal
+  allocation build no longer applies Mesa patches 0023/0024.
+- `test/xf86drm_shim_test.c`, `src_driver/tests/3d_abi_test.c`: host coverage
+  for memory-kind transport and validation.
+- `test/test_full_driver.sh`, `test_logs/v3.0.0.235-20261116-174247.log`:
+  package build, guest run, and latest results.
+- `test/3d_tests/glxgears_main.cpp`, `mesa_patches/nvx_wgl_bridge.c`:
+  standalone gears and XP WGL context bridge.
