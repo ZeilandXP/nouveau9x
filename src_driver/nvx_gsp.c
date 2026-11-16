@@ -449,6 +449,12 @@ static BOOLEAN NvxGspCall(PNVX_DEVICE_EXTENSION dev,ULONG expected,
                 LogStr(" chid=");LogHex(words[21]);LogStr(" type=");LogHex(words[22]);
                 LogStr(" scope=");LogHex(words[23]);LogStr("\n");
                 if(words[22]==ROBUST_CHANNEL_PBDMA_ERROR) NvxGspLogPbdmaFault(dev);
+                if(words[22]==ROBUST_CHANNEL_FIFO_ERROR_MMU_ERR_FLT) {
+                    LogStr("NVX [GR-FAULT]: FIFO MMU RC received; shadow queue snapshot follows.\n");
+#if NVX_ENABLE_GR_CHANNEL_PROBE
+                    NvxGspDumpFaultShadow(dev);
+#endif
+                }
                 if(words[21]==1) dev->GspChannelFaulted=TRUE;
                 if(words[21]==2) dev->GspGraphicsChannelFaulted=TRUE;
                 for(ULONG i=0;i<NVX_3D_CLIENT_SESSION_SLOTS;i++) {
@@ -3505,6 +3511,7 @@ BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
     const uint32_t *nvc0Dwords,ULONG64 fenceValue)
 {
     PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
+    NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS faultInfo={0};
     PUCHAR scratch;
     volatile ULONG *userd,*fence;
     volatile ULONG64 *fifo;
@@ -3580,6 +3587,37 @@ BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
     }
     LogStr("NVX [NVC0-NATIVE]: validated clear stream did not complete; fence=");
     LogHex(fenceValue);LogStr(" observed=");LogHex(fence[0]);LogStr("\n");
+    /* RC type 31 has appeared on both the boot and client channels after this
+       stream. Ask OpenRM for the channel's latched VA/type before another
+       request or teardown can consume the evidence. */
+    if(dev->GspGraphicsChannelHandle&&
+       NvxGspControl(dev,dev->GspGraphicsChannelHandle,
+                     NVA06F_CTRL_CMD_GET_MMU_FAULT_INFO,
+                     &faultInfo,sizeof(faultInfo))) {
+        const NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS *reply=
+            (const NVA06F_CTRL_GET_MMU_FAULT_INFO_PARAMS *)(dev->RpcRxRecord+104);
+        LogStr("NVX [GR-FAULT]: GET_MMU_FAULT_INFO addr=");
+        LogHex(((ULONG64)reply->addrHi<<32)|reply->addrLo);
+        LogStr(" type=");LogHex(reply->faultType);
+        LogStr(" shaderVA0=");LogHex(reply->shaderProgramVA[0]);
+        LogStr("\n");
+        if((((ULONG64)reply->addrHi<<32)|reply->addrLo)==0x10009000ULL) {
+            PULONG64 tables=(PULONG64)((PUCHAR)dev->GspDmaVirtual+
+                                       GSP_PAGE_TABLES_OFFSET);
+            ULONG64 expected=(dev->GspDmaPhysical.QuadPart+
+                              GSP_SCRATCH_OFFSET+0x9000ULL);
+            LogStr("NVX [GR-FAULT]: GPFIFO mapping PDE=");
+            LogHex(tables[1536+128*2+1]);
+            LogStr(" PTE=");LogHex(tables[2048+9]);
+            LogStr(" expectedPhys=");LogHex(expected);
+            LogStr(" dmaPhys=");LogHex(dev->GspDmaPhysical.QuadPart);
+            LogStr(" scratchObj=");LogHex(dev->GspScratchMemoryHandle);
+            LogStr(" vaSpace=");LogHex(dev->GspVaSpaceHandle);
+            LogStr("\n");
+        }
+    } else {
+        LogStr("NVX [GR-FAULT]: GET_MMU_FAULT_INFO unavailable after native clear timeout.\n");
+    }
     __sync_lock_release(&NvxGrUserSubmitBusy);
     return FALSE;
 }
