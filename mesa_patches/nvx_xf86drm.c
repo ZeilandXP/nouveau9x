@@ -2169,7 +2169,7 @@ nvx_drm_gem_new(struct nvx_drm_device_slot *device,
        * BAR1 VRAM window while still fitting the mapped GART. Keep placement
        * truthful by retrying in system memory and reporting GART to Mesa. */
       description.Usage = NVX_3D_USAGE_GART_BUFFER;
-      description.Alignment = 0x1000U;
+      /* Placement may change, but Nouveau's hardware alignment may not. */
       allocated = NvxNouveauBoCreate(&device->device, &description,
                                      device->client_token, &slot->bo);
       if (allocated)
@@ -2184,9 +2184,8 @@ nvx_drm_gem_new(struct nvx_drm_device_slot *device,
       return 0;
    }
 
-   /* The miniport places VRAM BOs at 128 KiB boundaries and GART BOs at
-    * 2 MiB boundaries. Confirm every requested VA alignment; never claim the
-    * NVX allocator/MMU created a Nouveau tiled or compressed layout. */
+   /* Both allocators must honor the caller's requested VA alignment,
+    * including when VRAM allocation falls back to linear GART backing. */
    if (request->align &&
        (slot->bo.allocation.GpuVa & (request->align - 1U))) {
       (void)NvxNouveauBoDestroy(&slot->bo);

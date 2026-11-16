@@ -88,8 +88,8 @@ mock_escape(void *opaque, uint32_t escape, uint32_t input_bytes,
       result->BufferId = buffer->id;
       if (request->Usage & NVX_3D_USAGE_GART_BUFFER) {
          uint64_t align = request->Alignment;
-         if (align < NVX_GART_SLICE_BYTES)
-            align = NVX_GART_SLICE_BYTES;
+         if (align < 0x10000U)
+            align = 0x10000U;
          next_gart_va = (next_gart_va + align - 1U) & ~(align - 1U);
          result->GpuVa = next_gart_va;
          next_gart_va += ((uint64_t)request->Bytes +
@@ -327,6 +327,9 @@ main(void)
       create.info.size = 0x04080000U;
       create.info.domain = NOUVEAU_GEM_DOMAIN_VRAM;
       create.align = 0x20000U;
+      /* A 64 KiB-aligned hole is not necessarily aligned for TLS (128 KiB).
+       * Do not let the mock's larger default alignment hide lost requests. */
+      next_gart_va = 0x12a10000ULL;
       assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GEM_NEW, &create,
                                  sizeof(create)) == 0);
       assert(create.info.domain == (NOUVEAU_GEM_DOMAIN_GART |

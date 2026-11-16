@@ -41,6 +41,7 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -661,6 +662,86 @@ static void make_window(const char *name, int x, int y, int width, int height) {
 	}
 }
 
+/* Compare the completed GL back buffer with the client area after SwapBuffers.
+ * These captures run once, outside the measured steady rendering sequence. */
+static void capture_ppm(const char *path, const unsigned char *pixels,
+                        int width, int height, bool bottom_up, bool bgra)
+{
+   FILE *fp = fopen(path, "wb");
+   unsigned red = 0, green = 0, blue = 0;
+   if (!fp) {
+      log_out("[WGLGEARS_CAPTURE] failed to open %s\n", path);
+      return;
+   }
+   fprintf(fp, "P6\n%d %d\n255\n", width, height);
+   for (int y = 0; y < height; y++) {
+      int row = bottom_up ? height - 1 - y : y;
+      for (int x = 0; x < width; x++) {
+         const unsigned char *p = pixels + ((size_t)row * width + x) * 4;
+         unsigned char rgb[3] = {p[bgra ? 2 : 0], p[1], p[bgra ? 0 : 2]};
+         red += rgb[0] > 24 && rgb[0] > 2U * rgb[1] && rgb[0] > 2U * rgb[2];
+         green += rgb[1] > 24 && rgb[1] > 2U * rgb[0] && rgb[1] > 2U * rgb[2];
+         blue += rgb[2] > 24 && rgb[2] > 2U * rgb[0] && rgb[2] > 2U * rgb[1];
+         fwrite(rgb, 1, 3, fp);
+      }
+   }
+   int failed = ferror(fp);
+   fclose(fp);
+   log_out("[WGLGEARS_CAPTURE] file=%s size=%dx%d red=%u green=%u blue=%u io_error=%d\n",
+           path, width, height, red, green, blue, failed);
+}
+
+static void capture_gl_target()
+{
+   GLint vp[4], read_buffer, alignment;
+   glGetIntegerv(GL_VIEWPORT, vp);
+   if (vp[2] <= 0 || vp[3] <= 0 || vp[2] > 2048 || vp[3] > 2048) return;
+   unsigned char *pixels = (unsigned char *)malloc((size_t)vp[2] * vp[3] * 4);
+   if (!pixels) return;
+   glGetIntegerv(GL_READ_BUFFER, &read_buffer);
+   glGetIntegerv(GL_PACK_ALIGNMENT, &alignment);
+   GLenum prior = glGetError();
+   glReadBuffer(GL_BACK);
+   glPixelStorei(GL_PACK_ALIGNMENT, 1);
+   glReadPixels(vp[0], vp[1], vp[2], vp[3], GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+   GLenum error = glGetError();
+   log_out("[WGLGEARS_CAPTURE] glReadPixels prior_error=%x error=%x\n", prior, error);
+   if (error == GL_NO_ERROR)
+      capture_ppm("C:\\wglgears-render.ppm", pixels, vp[2], vp[3], true, false);
+   glPixelStorei(GL_PACK_ALIGNMENT, alignment);
+   glReadBuffer(read_buffer);
+   free(pixels);
+}
+
+static void capture_presented_target()
+{
+   RECT rect;
+   if (!GetClientRect(hWnd, &rect) || rect.right <= 0 || rect.bottom <= 0) return;
+   BITMAPINFO info;
+   memset(&info, 0, sizeof(info));
+   info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+   info.bmiHeader.biWidth = rect.right;
+   info.bmiHeader.biHeight = -rect.bottom;
+   info.bmiHeader.biPlanes = 1;
+   info.bmiHeader.biBitCount = 32;
+   void *pixels = NULL;
+   HDC memory = CreateCompatibleDC(hDC);
+   HBITMAP bitmap = CreateDIBSection(hDC, &info, DIB_RGB_COLORS, &pixels, NULL, 0);
+   if (memory && bitmap) {
+      HGDIOBJ old = SelectObject(memory, bitmap);
+      BOOL copied = BitBlt(memory, 0, 0, rect.right, rect.bottom, hDC, 0, 0, SRCCOPY);
+      GdiFlush();
+      if (copied)
+         capture_ppm("C:\\wglgears-present.ppm", (const unsigned char *)pixels,
+                     rect.right, rect.bottom, false, true);
+      else
+         log_out("[WGLGEARS_CAPTURE] BitBlt failed error=%lu\n", GetLastError());
+      SelectObject(memory, old);
+   }
+   if (bitmap) DeleteObject(bitmap);
+   if (memory) DeleteDC(memory);
+}
+
 static void event_loop() {
 	MSG msg;
 	int t, t0 = current_time();
@@ -677,12 +758,16 @@ static void event_loop() {
 
 		angle += 2.0;
 		draw();
+        const char *renderer = (const char *)glGetString(GL_RENDERER);
+        bool capture = total_frames == 2 && renderer && !strncmp(renderer, "NV", 2);
+        if (capture) capture_gl_target();
         if (!SwapBuffers(hDC)) {
             log_out("[WGLGEARS] FAIL: SwapBuffers error=%lu\n", GetLastError());
             NvxClose3dClientSession(hDC);
             ExitProcess(1);
         }
 		GdiFlush();
+        if (capture) capture_presented_target();
 
 		/* calc framerate */
 		t = current_time();

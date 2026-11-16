@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.236"
+NVX_TEST_VERSION="3.0.0.237"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
 NVX_TEST_FLAGS=()
@@ -208,6 +208,14 @@ finish() {
                 >> "$NVX_RUN_LOG" 2>/dev/null || \
             guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i cat "/test_accel/$guest_log" \
                 >> "$NVX_RUN_LOG" 2>/dev/null || true
+        done
+        # Only collect captures recorded by this run, rather than old files
+        # left on the guest disk when hardware context creation fails.
+        for capture in wglgears-render.ppm wglgears-present.ppm; do
+            if grep -Fq "file=C:\\$capture " "$NVX_RUN_LOG"; then
+                guestfish --ro -a "$NVX_ROOT/winxp_x64.qcow2" -i download "/$capture" \
+                    "${NVX_RUN_LOG%.log}-$capture" 2>/dev/null || true
+            fi
         done
     fi
     if [ -f "$NVX_RUN_LOG" ]; then

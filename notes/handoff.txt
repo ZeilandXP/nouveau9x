@@ -1,8 +1,26 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 16, 2026. Latest test build: **3.0.0.236**.
+Updated November 16, 2026. Latest test build: **3.0.0.237**.
 
-### v3.0.0.236 shadow coherency fix (hardware test in progress)
+### v3.0.0.237 alignment fix and target captures (test in progress)
+
+- v236 exposed a concrete screen-creation failure: TLS requests 128 KiB
+  alignment, but the VRAM-to-GART fallback replaced it with 4 KiB. GPUVA
+  0x12a10000 consequently failed the shim's own requested-alignment check.
+  Guest trace confirms kind=8/f=1 and Error allocating TLS area. This explains
+  this run's software fallback, before any geometry coherency validation.
+- Preserve the original alignment when falling back to GART. The GEM mock
+  now models 64 KiB minimum alignment and deliberately starts at the observed
+  misaligned hole, preventing an accidentally 2 MiB-aligned mock from hiding it.
+- Gears now captures its third hardware frame before SwapBuffers using
+  glReadPixels, then captures the presented client area using GDI BitBlt.
+  Records GL errors and dominant RGB coverage. Files on the guest are
+  C:\wglgears-render.ppm and C:\wglgears-present.ppm; the full runner extracts
+  them beside the timestamped log if this run records their creation.
+  These diagnostics add synchronization/readback work and affect measured FPS.
+- Host checks passed with the alignment fix. Hardware result pending.
+
+### v3.0.0.236 shadow coherency fix
 
 - Replaced access-flag-gated whole-BO shadow uploads with changed-dword
   publication for every mapped BO referenced by a submission. This covers
@@ -18,13 +36,14 @@ Updated November 16, 2026. Latest test build: **3.0.0.236**.
   a=BufferId, b=offset, c=uploaded bytes, d=map access, e=GPU readback success,
   f=sample matches CPU. Up to 64 bytes are independently read back per range;
   a mismatch fails publication. Samples do not validate complete geometry.
-- Host checks passed before the final new-allocation zero regression was
-  added; the full runner repeats all checks. Added regression coverage for
+- All host checks passed, including regression coverage for
   writes via READ-labelled maps, preserving GPU changes elsewhere in a BO,
   unchanged repeat flushes, merge on refresh, and initial backing contents.
-- Hardware outcome pending. Two build attempts were stopped before deployment
-  to cover initial-zero and partial-upload freshness edge cases. No guest boot
-  occurred in those attempts; the final build repeats all host checks.
+- Hardware log: test_logs/v3.0.0.236-20261116-181522.log. Booted the expected
+  driver; native NVX_3D_RESULT passed, but gears and the cube used GDI Generic
+  because TLS alignment was rejected. No hardware drawing correctness claim.
+  One firmware assertion remains. Two earlier build attempts were stopped
+  before deployment to cover initial-zero/partial-upload freshness edge cases.
 
 ## Current status
 
