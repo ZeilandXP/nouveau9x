@@ -2,6 +2,49 @@
 
 Updated November 16, 2026.
 
+### Source trace after `.231`: confirmed boot instance corruption
+
+- Confirmed overlapping GPU writes: `nvx_gsp.c:NvxGspCreateGraphicsProbe`
+  assigns the boot GR instance/RAMFC to scratch `+0xa000` (line 1556).
+  Later `nvx_disp_rpc.c:NvxGspInitDisplayChannels` reads 16 pages of cleared
+  display instance memory into exactly scratch `+0xa000..+0xafff` (lines
+  174-176). This overwrites the live GR instance with zeroes. In `.231`, the
+  boot GR triangle passes at log line 478, display instance initialization
+  completes at 651, and a subsequent boot submission times out and receives
+  ChID 2 RC 31. This is a concrete allocation-lifetime bug and a strong causal
+  explanation for the later boot failure; correction still needs hardware
+  validation. Upstream `kchannelAllocMem_GM107` owns a separate instance
+  allocation and RAMFC subdescriptor; display readback cannot reuse that live
+  allocation. Use dedicated, lock-protected readback backing for display.
+- `nvx_ce.c:NvxGspVerifyGrBacking` also uses `+0xa000`, but its call precedes
+  `NvxGspCreateGraphicsProbe` in `NvxGspCreateObjects`. That use is not the
+  same post-allocation overwrite. Account for call order when auditing aliases.
+- The private client recreation failure is independently established:
+  `.231` frees ChID 10, recreates it successfully at the RPC level, then fails
+  `NvxGrVerifyClientQueue` before its seven-dword SET_OBJECT/semaphore probe
+  completes. `NvxWinsysOpenNouveauChannel` consequently fails and xf86drm
+  reports `channel_result=2`; Mesa screen creation fails before application
+  shaders/draws. The private instance has different backing from boot scratch,
+  so the display overwrite does not by itself prove the cause of this stall.
+- Correct the earlier interpretation of `.230`: the paired FIFO-data EHeap
+  only changes CPU bookkeeping; its association is not consumed by hardware
+  setup or the kick. Its presence did not establish a channel-recreation fix.
+  Upstream also supports normal ChID reuse; merely recycling ID 10 is not a bug.
+- Concrete submission difference: upstream `channelFillGpFifo` in
+  `gpu/mem_mgr/channel_utils.c` writes GPFIFO, flushes CPU WC stores, writes
+  USERD PUT, flushes again, and calls `kbusFlushPcieForBar0Doorbell_HAL` before
+  ringing. XP uses CPU barriers and `nvx_openrm_kick`, which additionally
+  writes `runlistBase+0x90` and has no equivalent explicit PCIe flush in that
+  path. Applicability of the flush depends on mapping/cache attributes; this
+  remains a hypothesis, not a proven cause.
+- Upstream `kchannelDestruct_IMPL` sends channel FREE, detaches GR mappings,
+  releases HAL resources/group membership, then releases ChID. XP performs
+  STOP/EVICT/FREE and releases its backing but does not implement the full
+  host mapping graph. Audit this together with fresh/reused instance contents
+  and PTE visibility. `RAMFC_CHID=0` is an XP diagnostic at a hardcoded offset,
+  not sufficient proof that RM failed to assign the requested hardware ID.
+- This was source/log analysis only; no driver changes or new hardware run.
+
 ### `.230` / `.231` upstream ChID lifecycle and hardware tests
 
 - `NvxGspSubmitNvc0NativeClear` now requires a ready channel owned by the
