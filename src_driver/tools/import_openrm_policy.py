@@ -11,6 +11,11 @@ import sys
 
 root, output = map(pathlib.Path, sys.argv[1:])
 selections = {
+    'src/nvidia/src/kernel/gpu/mmu/arch/turing/kern_gmmu_tu102.c': [
+        'kgmmuCheckPendingInvalidates_TU102', 'kgmmuSetPdbToInvalidate_TU102',
+        'kgmmuCommitTlbInvalidate_TU102', 'kgmmuSetTlbInvalidateMembarWarParameters_TU102'],
+    'src/nvidia/src/kernel/gpu/mmu/arch/ampere/kern_gmmu_ga100.c': [
+        'kgmmuSetTlbInvalidationScope_GA100'],
     'src/nvidia/src/kernel/gpu/fifo/arch/ampere/kernel_fifo_ga100.c': [
         'kfifoGenerateWorkSubmitToken_GA100'],
     'src/nvidia/src/kernel/gpu/fifo/arch/turing/kernel_fifo_tu102.c': [
@@ -44,7 +49,7 @@ for relative, names in selections.items():
     license_end = source.index('*/') + 2
     parts.append(source[:license_end] + '\n')
     for name in names:
-        matches = list(re.finditer(r'^NV_STATUS\s*\n' + re.escape(name) + r'\s*\(', source, re.M))
+        matches = list(re.finditer(r'^(?:NV_STATUS|NvU32|void)\s*\n' + re.escape(name) + r'\s*\(', source, re.M))
         if len(matches) != 1:
             raise SystemExit(f'{path}: expected one complete definition of {name}')
         start = matches[0].start()

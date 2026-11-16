@@ -84,6 +84,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
 {
     ULONG off=regoff(p);
     regs[off/4]=value;
+    if(off==0xb830b0) regs[off/4]=value&~0x80000000U;
     if(off==0x110c00) {
         NVX_MSGQ_HEADER *q=dev.StatQueueVirtual,*cmd=dev.CmdQueueVirtual;
         ULONG write=q->WritePtr;
@@ -648,7 +649,10 @@ int main(void)
                 dev.FramebufferVirtual=(PVOID)1;
                 regs[0x610010/4]=3;regs[0x610014/4]=0x6d40; /* Inherited BIOS root. */
                 memset(gpuVram+0x1ff0000,0xa5,0x10000);
+                PUCHAR instance=(PUCHAR)dev.GspDmaVirtual+GSP_SCRATCH_OFFSET+0xa000;
+                memset(instance,0x6b,0x1000);
                 assert(NvxGspInitDisplayChannels(&dev)==(scenario==0 || scenario==12));
+                for(ULONG i=0;i<0x1000;i++) assert(instance[i]==0x6b);
                 assert(dev.NativeDisplayChannelsReady==(scenario==0 || scenario==12));
                 assert(dev.NativeDisplayInstance==0x1ff0000);
                 assert(!dev.NativeDisplayNotifierReady);

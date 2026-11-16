@@ -2,6 +2,144 @@
 
 Updated November 16, 2026.
 
+### `.234` physical register translation correction
+
+- `.233` booted and finished, but rejected every GART map with status 0x56
+  (NV_ERR_NOT_SUPPORTED). Its register accessibility check caught reads from
+  the wrong physical location, before triggering an invalidate. Thus all
+  `.233` OpenGL contexts fell back; this run did not test a working invalidate.
+- Corrected MMU object views to add OpenRM's PF virtual-register physical base
+  `DRF_BASE(NV_VIRTUAL_FUNCTION_FULL_PHYS_OFFSET)` = 0xb80000, as required by
+  `gpuGetVirtRegPhysOffset_TU102` and `GPU_GET_VREG_OFFSET`. MMU invalidate is
+  now accessed at BAR0+0xb830b0, PDB at +0xb830a0/+0xb830a4. Existing doorbell
+  views retain their existing zero offset. The host register test now models
+  the physical PF addresses, and shim/GSP host tests pass.
+- `.234` full-suite run completed (runner exit 0). Log:
+  `test_logs/v3.0.0.234-20261116-172024.log`. Host checks and XP import audit
+  passed. Recreated ChID 10 at queueVA 0x11a00000 verifies successfully;
+  another private ChID 18 also verifies. No private queue timeout or MMU
+  fault appears. First gears reports NV170, 128 frames/6s = 21.333 FPS.
+  Subsequent cube reports NV170, screens=1, 901 GPU batches, 300 frames at
+  59.6 FPS. Native clear fence/pixel readback and NVX_3D_RESULT both PASS.
+  This validates the external-PDB invalidation correction for this sequence.
+- Remaining failures: user photo `/home/sanjay/Downloads/20261116_172147.jpg`
+  shows most of the red gear missing (small red arc), blue/green gears
+  recognizable. No claim of image correctness. Depth allocation, depth clear,
+  culling/transform state and present/readback need discrimination.
+  WineD3D now creates IDirect3D9 but logs GL_OUT_OF_MEMORY and incomplete FBOs;
+  the 64-bit test exits -1073741819 (0xc0000005), and the 32-bit gears attempt
+  logs context error 183 then the same exit code. Runner exit 0 and
+  ALL_BENCHMARKS_FINISHED PASS do not mean all guest tests passed. Firmware
+  assertion count remains 1.
+- Normal-allocation obstacle is concrete: `nvx_xf86drm.c:nvx_drm_gem_new`
+  rejects all tile_flags bits except NOUVEAU_GEM_TILE_NONCONTIG and does not
+  propagate the requested memory kind to the miniport. XP patches 0023/0024
+  force WGL targets toward linear/shared GART and depth memtype=0 to avoid
+  unsupported kind requests. Restore ordinary Nouveau placement by teaching
+  the OS allocator ABI to preserve validated kinds, allocate/map the matching
+  uncompressed VRAM PTEs and support tiled target transfer/readback, then remove
+  overrides. Removing them alone currently causes allocation rejection. This
+  is an allocator/OS boundary change; leave upstream layout selection intact.
+
+### `.233` upstream external-PDB invalidate implementation
+
+- Imported unchanged TU102 pending/commit/PDB encoding and downgrade membar
+  functions, plus GA100 invalidation-scope policy, through the existing
+  `tools/import_openrm_policy.py` selector. Submodule sources remain unchanged.
+- `nvx_openrm_invalidate_external` supplies the actual system-memory root at
+  `GspDmaPhysical + GSP_PAGE_TABLES_OFFSET`, serializes the register transaction,
+  waits before and after triggering, and rejects unavailable MMIO or timeout.
+  Uses SYS_MEMBAR, global acknowledgement and NON_LINK_TLBS like the upstream
+  PF downgrade path. Timeout propagates to the existing backing-retention path.
+- GART map/unmap and depth-kind changes now use this helper instead of treating
+  a successful GSP invalidate CONTROL reply as proof of hardware completion.
+- Host shim regression covers PDB encoding, invalidate flags, a stuck trigger,
+  timeout lock release and a subsequent successful call. GSP mock passed;
+  `.233` hardware result and corrected `.234` outcome are recorded above.
+
+### Source trace after `.232`: externally owned VASpace invalidation
+
+- Correction to the earlier run summary: the first 64-bit gears session DID
+  verify its private queue (serial line 869) and completed 103 frames in six
+  seconds (17.167 FPS, lines 1077-1079). Later recreated channels fail. The
+  subsequent GDI Generic cube does not describe that first gears session.
+- Concrete API mismatch: `nvx_disp_rpc.c:1015` creates the VASpace with
+  `NV_VASPACE_ALLOCATION_FLAGS_IS_EXTERNALLY_OWNED`. `NvxGspInvalidateVaSpace`
+  (`nvx_gsp.c:705`) sends DMA_INVALIDATE_TLB through GSP CONTROL and treats
+  its successful reply as completed invalidation.
+- In the pinned upstream, `subdeviceCtrlCmdDmaInvalidateTLB_IMPL`
+  (`gpu/mem_mgr/dma.c:829`) calls `vaspaceInvalidateTlb`. The GVAS
+  implementation (`mem_mgr/gpu_vaspace.c:2337`) obtains the root from
+  `mmuWalkGetPageLevelInfo` and only invokes the hardware HAL if it is nonnull.
+  Externally owned root commit instead stores `pExternalPDB` and returns
+  (`gpu_vaspace.c:3190`, setter at 4753). The external-aware accessor
+  `gvaspaceGetPageDirBase_IMPL:2094` explicitly handles that separate root;
+  the invalidate implementation does not use it. Thus successful CONTROL is
+  insufficient evidence that our external PDB was invalidated. This is the
+  strongest source explanation for stale translations after VA reuse, though
+  behavior inside the shipped 535 firmware has not been instrumented/proved.
+- Evidence fits: first queue VA 0x11a00000 maps physical 0x044e9000 and works;
+  recreation reuses the VA with different physical backing, then CE sees
+  mismatches in both FIFO and pushbuffer and PBDMA never fetches the probe.
+  Record actual compared words next to distinguish old backing from zeros.
+- Upstream reuse is feasible: import complete
+  `kgmmuCheckPendingInvalidates_TU102`, `kgmmuSetPdbToInvalidate_TU102`, and
+  `kgmmuCommitTlbInvalidate_TU102` from `gpu/mmu/arch/turing/kern_gmmu_tu102.c`
+  using the existing source-selection pattern. Supply XP MMIO, timeout,
+  physical-PDB and PF adapters. Preserve GA100 scope selection and TU102
+  PTE_DOWNGRADE membar/ack handling; validate register accessibility and wait
+  for hardware completion before allowing old backing/VA reuse. Importing
+  only the full VASpace wrapper would retain the wrong ownership assumption
+  and additionally require the NVOC/MMU-walker object graph.
+- Analysis only in this revision; no additional hardware run.
+
+### `.232` display readback fix and suspect audit
+
+- Fixed confirmed boot instance corruption: display initialization now calls
+  `NvxGspVerifyZeroRange` in `nvx_ce.c`. It reads through scratch `+0xe000`
+  while holding both the shared scratch and CE locks through CPU inspection;
+  the live `+0xa000` instance/RAMFC page is preserved. Added a host regression
+  that seeds that page before display initialization and checks every byte
+  afterward. Host checks and XP package/import audit pass.
+- PCIe-flush suspect narrowed: generated `g_kern_bus_nvoc.c` lines 841-849
+  selects `kbusFlushPcieForBar0Doorbell_GH100` only on GH100. GA104 gets the
+  NV_OK no-op (`g_kern_bus_nvoc.h:2170`). Do not add the Hopper flush as an
+  asserted Ampere fix. CPU barriers already precede USERD publication/kick.
+- RAMFC descriptor audit: upstream `kchannelAllocMem_GM107` allocates and
+  zeroes a separate instance, with RAMFC a 512-byte subdescriptor at offset
+  zero. The XP descriptor's 4KB instance/512-byte RAMFC arrangement matches;
+  it is the display alias that violated the instance lifetime. Channel backing
+  is zeroed before GPFIFO ALLOC; PTE map/unmap waits for RM TLB invalidation
+  before reuse. These checks do not establish GPU translation correctness.
+- Added timeout-only `GR-CLIENT-MAP` diagnostics: with the failed queue still
+  owned, CE reads its FIFO entry and seven-dword probe from GART and compares
+  against CPU backing. This checks VA visibility without rewriting the queue.
+- Teardown retains STOP/EVICT/channel FREE/TSG FREE/ID release. Upstream GR
+  mapping cleanup is conditional on client-RM context allocation and uses a
+  full mapping graph. It cannot safely be replaced by a guessed extra FREE or
+  unconditional unmap in this shim. ChID reuse and the extra runlist kick
+  remain under investigation; neither was hidden with ID quarantine/delays.
+- `.232` full VFIO suite booted after automatic retries and completed. Host
+  checks and XP package/import audit passed. GPU copy/clear paths and the
+  boot-channel hardware triangle/fence/readback passed. The serial log reports
+  firmware assertion count 1; the suite summary does not report a new MMU
+  fault during this run.
+- The private channel still fails queue verification on ChID 10. New
+  `GR-CLIENT-MAP` diagnostics confirm CE can copy from both GART ranges, but
+  the GPU-visible bytes differ from the CPU backing: 4/8 bytes at FIFO offset
+  `+0x9000`, and 18/28 bytes at pushbuffer offset `+0xf000`. At timeout,
+  USERD GET/PUT and GP_FETCH are all 1 while PB_FETCH/GET/PUT remain 0. This
+  narrows the next trace to the mismatching bytes and CPU/GPU mapping/cache
+  visibility; it does not yet distinguish stale PTEs from wrong physical
+  backing or incomplete publication.
+- Nouveau screen creation still fails at FIFO channel creation. OpenGL reports
+  GDI Generic and 300 software frames at 61 FPS (`gpu_batches=0`); native
+  Nouveau clear cannot open the owner's channel. The bounded miniport 3D test
+  still passes its owned hardware triangle, but the overall 3D suite fails and
+  Direct3D 9 has no HAL. WGL context creation still returns error 183.
+- Log: `test_logs/v3.0.0.232-20261116-170052.log`; `vm_serial.log` points to
+  this run. No claim that full OpenGL acceleration works.
+
 ### Source trace after `.231`: confirmed boot instance corruption
 
 - Confirmed overlapping GPU writes: `nvx_gsp.c:NvxGspCreateGraphicsProbe`
@@ -102,17 +240,17 @@ Updated November 16, 2026.
 - This run proves restoring EVICT and refusing reopen after failed teardown did not fix the recreated-channel queue stall. Focus the next code trace on how RM initializes/rebinds the reused ChID's instance/RAMFC and how the first pushbuffer VA is consumed after channel FREE/reallocation. Do not treat GP_FETCH=1 as proof that PBDMA fetched or executed the pushbuffer.
 - Version identity mismatch: the package INF and archive are `.228`, but the miniport serial banner still says `3.0.0.5` (`src_driver/nvxmp.c`). The binary was built and packaged by the `.228` run, but update the embedded banner on the next revision so the guest log identifies it consistently.
 
-## 1. Latest Run & Artifacts
+## 1. Latest Run & Artifacts (v3.0.0.234)
 ### Upstream comparison after `.228`
 
 - Highest-priority custom boundary: `nvx_gr_clients.c:NvxGspOpenClientChannel` builds physical context initialization and VA-only PROMOTE requests itself. Upstream `kernel_graphics_context.c` tracks mappings/refcounts with VA_LIST and detaches/unmaps through `shrkgrctxDetach_IMPL` (around 3530), subject to `kgrctxShouldCleanup`. XP has no equivalent host mapping ownership graph. Shared global backing plus private context backing needs explicit ownership accounting; a generic EVICT is not equivalent to all host destructor work. This is a confirmed architectural difference, not a proven explanation of the stalled queue.
 - `nvx_openrm_shim.c:nvx_openrm_channel_memory` hardcodes descriptor sizes, offsets and cache attributes. Upstream `_kchannelSendChannelAllocRpc` (kernel_channel.c around 2421) obtains these from real FIFO instance/USERD/TSG memory descriptors. The physical-descriptor RPC itself is upstream behavior for GSP clients; supplying descriptors is not inherently a divergence. Reuse allocator/HAL sizing and descriptor construction where feasible, with XP supplying the actual coherent allocations.
 - `nvx_openrm_policy.c:nvx_openrm_kick` calls the imported TU102 doorbell implementation, then adds a custom MMIO write to runlistBase+0x90. That extra write is not part of the compared upstream helper. A previous doorbell-only candidate failed boot, so removing it blindly is not a validated fix; audit the physical BAR0 versus upstream virtual-register mapping contract first.
-- `nvx_openrm_containers.c` now mirrors the ChID and FIFO-data heaps, but is not the complete CHID_MGR. Upstream also clears FIFO data, drops isolation IDs and supports retained ID references. The paired heaps did not stop the `.231` ChID 10 recreation stall; refcount/retainer and full channel teardown behavior remain open comparisons.
+- `nvx_openrm_containers.c` now mirrors the ChID and FIFO-data heaps, but is not the complete CHID_MGR. Upstream also clears FIFO data, drops isolation IDs and supports retained ID references. The paired heaps and `.232` mapping audit did not stop the ChID 10 queue stall; `.232` shows byte mismatches in both GPU-visible queue regions.
 - Native clear now requires its own ready client channel, and its test explicitly opens the owner channel. The legacy `NvxGspSubmitUserOperation` path still targets boot GR and is associated with the later ChID 2 FIFO MMU fault; changing native-clear ownership does not eliminate all boot submissions. Route diagnostics through an owned client lease and keep one submission implementation.
 - Practical reuse: continue importing self-contained OpenRM policy/HAL functions and containers with real XP OS adapters. Full `kchannelConstruct`/destruct, GR mapping and memory ownership routines require the connected NVOC/resource-server/memdesc/VASpace objects; the current small policy views cannot safely stand in for that object graph. Do not claim that a wrapper around existing custom code ports those subsystems.
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.231-20261116-163640.log` (active symlink: `vm_serial.log`)
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.234-20261116-172024.log` (active symlink: `vm_serial.log`)
 - **Previous Run Log**: `test_logs/v3.0.0.230-20261116-163045.log`
 - **Target VM**: `winxp_x64.qcow2` (Windows XP Professional x64 Edition, NT 5.2 SP2)
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO pass-through.
@@ -120,12 +258,12 @@ Updated November 16, 2026.
 
 ---
 
-## 2. Current Status & Implementation (latest test package v3.0.0.231)
+## 2. Current Status & Implementation (latest test package v3.0.0.234)
 
 ### What Was Implemented in v3.0.0.227 and v3.0.0.228:
 1. **Native Clear Ownership and OpenRM ChID heaps**:
    - `src_driver/nvx_gsp.c`: Native clear requires the request owner's ready channel; it never borrows another client or the boot channel.
-   - `src_driver/nvx_openrm_containers.c`: ChID and FIFO-data EHeaps allocate/free paired offsets, matching upstream `kfifoChidMgrAllocChid_IMPL` and `kfifoChidMgrFreeChid_IMPL`. The `.231` VFIO run still reproduces the same-ChID queue stall, so additional upstream lifecycle state remains unmodeled.
+   - `src_driver/nvx_openrm_containers.c`: ChID and FIFO-data EHeaps allocate/free paired offsets, matching upstream `kfifoChidMgrAllocChid_IMPL` and `kfifoChidMgrFreeChid_IMPL`. The `.232` VFIO run still reproduces the ChID 10 queue stall; CE readback shows data mismatches at the GPU-visible FIFO and pushbuffer addresses.
 2. **`wglgears` Hardware Pixel Format Selection**:
    - `test/3d_tests/glxgears_main.cpp`: Updated the candidate pixel format loop to scan from `fmt = 1` up to `maxScan` (`totalFormats` or 100), rather than starting at format 37. This prevents skipping hardware-accelerated Mesa formats (formats 1..36).
    - Added dynamic load fallback for `nvxmesa.dll` when `nvxogl64.dll` is queried.

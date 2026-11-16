@@ -12,6 +12,7 @@
 #include <kernel/os/nv_memory_type.h>
 #include <swref/published/ampere/ga100/dev_ctrl.h>
 #include <swref/published/turing/tu102/dev_vm.h>
+#include <swref/published/ampere/ga100/dev_vm.h>
 
 #define ADDR_SYSMEM 1
 #define ADDR_FBMEM 2
@@ -41,9 +42,35 @@ typedef struct {
 } KernelGraphicsContextUnicast;
 typedef KernelGraphicsContextUnicast KernelGraphicsContext;
 typedef GR_GLOBALCTX_BUFFERS KernelGraphics;
-typedef struct { void *bar0; } OBJGPU;
-#define GPU_VREG_WR32(gpu,offset,value) nvx_reg_write32((gpu)->bar0,(offset),(value))
+typedef struct { void *bar0; NvU32 vregOffset; } OBJGPU;
+#define GPU_VREG_WR32(gpu,offset,value) nvx_reg_write32((gpu)->bar0,(gpu)->vregOffset+(offset),(value))
 typedef struct { NvU32 unused; } KernelFifo;
+
+/* Minimal PF MMU views. The external PDB is supplied by XP, not an RM walker. */
+typedef struct { NvU32 remaining; } RMTIMEOUT;
+typedef struct { NvU32 unused; } KernelGmmu;
+typedef struct {
+    NvU32 regVal,gfid,pdbAperture;
+    NvU64 pdbAddress;
+    RMTIMEOUT timeout;
+} TLB_INVALIDATE_PARAMS;
+#define NV_GMMU_INVAL_SCOPE_ALL_TLBS 0
+#define NV_GMMU_INVAL_SCOPE_LINK_TLBS 1
+#define NV_GMMU_INVAL_SCOPE_NON_LINK_TLBS 2
+#define GPU_VREG_RD32(gpu,offset) nvx_reg_read32((gpu)->bar0,(gpu)->vregOffset+(offset))
+#define API_GPU_IN_RESET_SANITY_CHECK(gpu) NV_FALSE
+#define API_GPU_ATTACHED_SANITY_CHECK(gpu) NV_TRUE
+#define IS_VIRTUAL(gpu) NV_FALSE
+static inline NV_STATUS gpuCheckTimeout(OBJGPU *g,RMTIMEOUT *t)
+{ (void)g;return t->remaining-- ? NV_OK : NV_ERR_TIMEOUT; }
+static inline void osSpinLoop(void) { nvx_stall_us(1); }
+NV_STATUS kgmmuCheckPendingInvalidates_TU102(OBJGPU *,KernelGmmu *,RMTIMEOUT *,NvU32);
+void kgmmuSetPdbToInvalidate_TU102(OBJGPU *,KernelGmmu *,TLB_INVALIDATE_PARAMS *);
+NV_STATUS kgmmuCommitTlbInvalidate_TU102(OBJGPU *,KernelGmmu *,TLB_INVALIDATE_PARAMS *);
+NvU32 kgmmuSetTlbInvalidateMembarWarParameters_TU102(OBJGPU *,KernelGmmu *,TLB_INVALIDATE_PARAMS *);
+NV_STATUS kgmmuSetTlbInvalidationScope_GA100(OBJGPU *,KernelGmmu *,NvU32,TLB_INVALIDATE_PARAMS *);
+#define kgmmuCheckPendingInvalidates_HAL kgmmuCheckPendingInvalidates_TU102
+#define kgmmuSetPdbToInvalidate_HAL kgmmuSetPdbToInvalidate_TU102
 
 /* Unsupported virtualization paths return an error rather than invent state. */
 static inline NV_STATUS vgpuGetCallingContextGfid(OBJGPU *g,NvU32 *id)

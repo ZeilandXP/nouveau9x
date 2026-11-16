@@ -521,6 +521,35 @@ BOOLEAN NvxGspSubmitCopy2DLocked(PVOID extension,ULONG64 dstVa,ULONG64 srcVa,
     return result;
 }
 
+/* Keep display verification off live RAMIN and hold both shared scratch
+ * and CE ownership until the CPU has consumed the GPU readback. */
+static BOOLEAN NvxGspVerifyZeroRange(PNVX_DEVICE_EXTENSION dev,ULONG64 srcVa,
+                                     ULONG bytes)
+{
+    BOOLEAN ok=TRUE;
+    PUCHAR readback;
+    if(!dev||!bytes||!NvxGspLockUserScratch()) return FALSE;
+    if(!NvxGspLockEngine()) {
+        __sync_lock_release(&NvxGrUserSubmitBusy);
+        return FALSE;
+    }
+    readback=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET+0xe000;
+    for(ULONG offset=0;offset<bytes&&ok;) {
+        ULONG count=bytes-offset;
+        if(count>0x1000U) count=0x1000U;
+        if(!NvxGspSubmitCopyUnlocked(dev,dev->GspScratchGpuVa+0xe000,
+                                     srcVa+offset,count,count,count,1)) {
+            ok=FALSE;break;
+        }
+        __sync_synchronize();
+        for(ULONG i=0;i<count;i++) if(readback[i]) {ok=FALSE;break;}
+        offset+=count;
+    }
+    NvxGspUnlockEngine();
+    __sync_lock_release(&NvxGrUserSubmitBusy);
+    return ok;
+}
+
 /* Read one 64x16 RGBA8 tile from a dynamic Ampere color target. With a
  * 16-row block height, each 16-pixel-wide GOB strip is contiguous, while
  * adjacent strips are separated by the block-height interleave. Stage the

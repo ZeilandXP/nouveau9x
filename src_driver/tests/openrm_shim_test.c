@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <string.h>
 
+static PULONG invalidateRegister;
+static int holdInvalidate;
+
 ULONG VideoPortReadRegisterUlong(PULONG p)
 {
     return *p;
@@ -12,7 +15,7 @@ ULONG VideoPortReadRegisterUlong(PULONG p)
 
 VOID VideoPortWriteRegisterUlong(PULONG p, ULONG v)
 {
-    *p = v;
+    *p = (p==invalidateRegister&&!holdInvalidate) ? v&~0x80000000U : v;
 }
 
 UCHAR VideoPortReadRegisterUchar(PUCHAR p)
@@ -129,6 +132,24 @@ static void test_falcon_idle(void)
     assert(nvx_falcon_wait_idle(fake_bar0, 0, 50) == NV_FALSE);
 }
 
+static void test_external_invalidate(void)
+{
+    static NvU32 bar[0xbc0000/4];
+    invalidateRegister=&bar[0xb830b0/4];
+    assert(nvx_openrm_invalidate_external(bar,sizeof(bar),0x12345000)==NV_OK);
+    assert(bar[0xb830a0/4]==0x123452U);
+    assert(bar[0xb830a4/4]==0);
+    assert(bar[0xb830b0/4]==0x100c1U);
+    holdInvalidate=1;
+    assert(nvx_openrm_invalidate_external(bar,sizeof(bar),0x23456000)==NV_ERR_TIMEOUT);
+    bar[0xb830b0/4]=0;
+    holdInvalidate=0;
+    assert(nvx_openrm_invalidate_external(bar,sizeof(bar),0x23456000)==NV_OK);
+    assert(bar[0xb830a0/4]==0x234562U);
+    assert(nvx_openrm_invalidate_external(bar,sizeof(bar),0x23456001)==NV_ERR_INVALID_ARGUMENT);
+    invalidateRegister=NULL;
+}
+
 int main(void)
 {
     NvU32 flags=0,token=0;
@@ -142,6 +163,7 @@ int main(void)
     assert(!nvx_openrm_channel_identity(3,128,&flags,&token));
     assert(!nvx_openrm_channel_identity(3,0,NULL,&token));
 
+    test_external_invalidate();
     test_register_access();
     test_memory_ops();
     test_msgq_notification();

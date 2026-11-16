@@ -115,6 +115,32 @@ BOOLEAN NvxGspCloseClientChannel(PVOID extension,ULONG64 token)
  * inherited. This also makes a 3D completion tail valid if Mesa's first batch
  * contains only auxiliary-engine setup before its own 3D SET_OBJECT. */
 #if NVX_ENABLE_GR_CHANNEL_PROBE
+/* Caller holds NvxGrUserSubmitBusy. Use CE to distinguish stale GART
+ * translations from FIFO/context state, without modifying the failed queue. */
+static VOID NvxGrCheckQueueMapping(PNVX_DEVICE_EXTENSION dev,
+                                  NVX_GR_CLIENT_CHANNEL *c)
+{
+    const ULONG offsets[2]={0x9000,0xf000};
+    const ULONG sizes[2]={8,28};
+    PUCHAR readback=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET+0xe000;
+    if(!NvxGspLockEngine()) return;
+    for(ULONG part=0;part<2;part++) {
+        ULONG mismatch=0;
+        BOOLEAN copied=NvxGspSubmitCopyUnlocked(dev,
+            dev->GspScratchGpuVa+0xe000,c->GpuVa+offsets[part],
+            sizes[part],sizes[part],sizes[part],1);
+        __sync_synchronize();
+        if(copied) for(ULONG i=0;i<sizes[part];i++)
+            if(readback[i]!=((PUCHAR)c->Virtual)[offsets[part]+i]) mismatch++;
+        LogStr("NVX [GR-CLIENT-MAP]: offset=");LogHex(offsets[part]);
+        LogStr(" copy=");LogHex(copied);LogStr(" mismatches=");LogHex(mismatch);
+        LogStr(" instancePA=");LogHex((ULONG64)c->Physical.QuadPart+0xa000);
+        LogStr("\n");
+        if(!copied) break;
+    }
+    NvxGspUnlockEngine();
+}
+
 static BOOLEAN NvxGrVerifyClientQueue(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CHANNEL *c)
 {
     PUCHAR scratch=c->Virtual;
@@ -158,6 +184,7 @@ static BOOLEAN NvxGrVerifyClientQueue(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CH
        a firmware RC notification. Capture channel fetch/interrupt state
        before STOP_CHANNEL and FREE erase the evidence. */
     NvxGspLogPbdmaFault(dev);
+    NvxGrCheckQueueMapping(dev,c);
     if(c->RunlistBase&&dev->Bar0Length>=c->RunlistBase+0x10U) {
         ULONG cfg=VideoPortReadRegisterUlong((PULONG)
             ((PUCHAR)dev->Bar0MmioVirtual+c->RunlistBase+4U));

@@ -18,6 +18,7 @@ extern "C" {
 #endif
 
 /* Register read/write abstraction */
+NV_STATUS nvx_openrm_invalidate_external(void *,NvU32,NvU64);
 NvU32 nvx_reg_read32(const void *base, NvU32 offset);
 void  nvx_reg_write32(void *base, NvU32 offset, NvU32 val);
 NvU8  nvx_reg_read08(const void *base, NvU32 offset);

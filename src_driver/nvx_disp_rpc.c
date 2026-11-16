@@ -140,7 +140,7 @@ BOOLEAN NvxGspInitDisplayChannels(PVOID extension)
     const ULONG classes[3]={0xc67d,0xc67e,0xc67e};
     const ULONG instances[3]={0,0,2};
     NVX_DISPLAY_INSTANCE_535 instance={0};
-    PUCHAR bar0,scratch;
+    PUCHAR bar0;
     ULONG64 base,va;
     if(!dev || dev->NativeDisplayAttempted) return dev && dev->NativeDisplayChannelsReady;
     /* The primary surface mapping follows SET_CURRENT_MODE. Do not publish
@@ -168,13 +168,9 @@ BOOLEAN NvxGspInitDisplayChannels(PVOID extension)
     dev->NativeDisplayInstance=base;
     va=dev->GspVramGpuVa+base;
     bar0=dev->Bar0MmioVirtual;
-    scratch=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET;
     if(!NvxGspSubmitFill(dev,va,0,0x10000)) return FALSE;
     /* GPU readback of the entire instance/RAMHT, not the unreliable BAR1 map. */
-    for(ULONG offset=0;offset<0x10000;offset+=0x1000) {
-        if(!NvxGspSubmitCopy(dev,dev->GspScratchGpuVa+0xa000,va+offset,0x1000)) return FALSE;
-        for(ULONG i=0;i<0x1000;i++) if(scratch[0xa000+i]) return FALSE;
-    }
+    if(!NvxGspVerifyZeroRange(dev,va,0x10000)) return FALSE;
     instance.physical=base;instance.size=0x10000;instance.addressSpace=2;instance.cache=2;
     if(!NvxGspControl(dev,dev->GspSubdeviceHandle,NV2080_CTRL_CMD_INTERNAL_DISPLAY_WRITE_INST_MEM,&instance,sizeof(instance))) {
         LogStr("NVX [NATIVE]: display instance registration failed; no channels submitted.\n");return FALSE;

@@ -641,11 +641,12 @@ static BOOLEAN __attribute__((unused)) NvxGspGetClassEngineId(PNVX_DEVICE_EXTENS
 
 /* Change the allocated depth page's existing 64KB leaf PTE to its zeta kind,
    so GR and CE use the same VA and the same mapping for that VRAM page. */
+static BOOLEAN NvxGspInvalidateVaSpace(PNVX_DEVICE_EXTENSION dev);
+
 BOOLEAN NvxGspSetDepthPageKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
                                ULONG kind,BOOLEAN map)
 {
     PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
-    NV2080_CTRL_DMA_INVALIDATE_TLB_PARAMS invalidate;
     ULONG64 offset,value;
     ULONG page,slice;
     PULONG64 lpt;
@@ -669,11 +670,7 @@ BOOLEAN NvxGspSetDepthPageKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
           (map?((1ULL<<7)|((ULONG64)kind<<56)):0ULL);
     lpt[page]=value;
     __sync_synchronize();
-    VideoPortZeroMemory(&invalidate,sizeof(invalidate));
-    invalidate.hVASpace=dev->GspVaSpaceHandle;
-    if(!NvxGspControl(dev,dev->GspSubdeviceHandle,
-                      NV2080_CTRL_CMD_DMA_INVALIDATE_TLB,
-                      &invalidate,sizeof(invalidate))) return FALSE;
+    if(!NvxGspInvalidateVaSpace(dev)) return FALSE;
     LogStr("NVX [MMU]: depth page ");LogHex(gpuVa);
     LogStr(map?" mapped kind ":" restored kind ");LogHex(map?kind:0U);
     LogStr(" PTE=");LogHex(lpt[page]);
@@ -704,13 +701,15 @@ BOOLEAN NvxGspSetDepthRangeKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
 
 static BOOLEAN NvxGspInvalidateVaSpace(PNVX_DEVICE_EXTENSION dev)
 {
-    NV2080_CTRL_DMA_INVALIDATE_TLB_PARAMS invalidate;
+    NV_STATUS status;
     if(!dev||!dev->GspVaSpaceHandle) return FALSE;
-    VideoPortZeroMemory(&invalidate,sizeof(invalidate));
-    invalidate.hVASpace=dev->GspVaSpaceHandle;
-    return NvxGspControl(dev,dev->GspSubdeviceHandle,
-                         NV2080_CTRL_CMD_DMA_INVALIDATE_TLB,
-                         &invalidate,sizeof(invalidate));
+    status=nvx_openrm_invalidate_external(dev->Bar0MmioVirtual,dev->Bar0Length,
+        (ULONG64)dev->GspDmaPhysical.QuadPart+GSP_PAGE_TABLES_OFFSET);
+    if(status!=NV_OK) {
+        LogStr("NVX [MMU]: external PDB invalidate failed status=");
+        LogHex(status);LogStr("\n");
+    }
+    return status==NV_OK;
 }
 
 static volatile ULONG g_NvxGartPteBusy;
