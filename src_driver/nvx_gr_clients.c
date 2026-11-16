@@ -66,6 +66,11 @@ static BOOLEAN NvxGrDestroyClient(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CHANNE
         if(!NvxGspCall(dev,10,release,sizeof(release))) goto unsafe;
         c->MemoryAllocated=FALSE;
     }
+    if(c->HardwareIdAllocated) {
+        if(nvx_openrm_chid_free(dev->GspChannelIdHeap,&c->ClientToken,
+                               c->HardwareChannelId)!=NV_OK) goto unsafe;
+        c->HardwareIdAllocated=FALSE;
+    }
     c->Faulted=FALSE;
     return TRUE;
 unsafe:
@@ -102,7 +107,7 @@ static BOOLEAN NvxGrVerifyClientQueue(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CH
     PUCHAR scratch=c->Virtual;
     PULONG push=(PULONG)(scratch+0xf000);
     volatile ULONG *fence=(volatile ULONG *)(scratch+0x5000);
-    volatile ULONG *userd=(volatile ULONG *)(scratch+0xb400);
+    volatile ULONG *userd=(volatile ULONG *)(scratch+NVX_GR_CLIENT_USERD_OFFSET);
     volatile ULONG64 *fifo=(volatile ULONG64 *)(scratch+0x9000);
     ULONG64 va=c->GpuVa+0xf000,fenceVa=c->GpuVa+0x5000;
     fence[0]=0;
@@ -123,9 +128,9 @@ static BOOLEAN NvxGrVerifyClientQueue(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CH
     for(ULONG wait=0;wait<50000U;wait++) {
         if(fence[0]==0x4752434cU) {
             __sync_synchronize();
-            return NvxGspGetName(dev)&&!c->Faulted&&!dev->GspMmuFaultQueued;
+            return NvxGspGetName(dev)&&!c->Faulted&&!dev->GspGraphicsDeviceFaulted&&!dev->GspMmuFaultQueued;
         }
-        if(c->Faulted||dev->GspMmuFaultQueued) break;
+        if(c->Faulted||dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued) break;
         VideoPortStallExecution(100U);
     }
     c->Faulted=TRUE;
@@ -147,14 +152,15 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     NV2080_CTRL_GPU_PROMOTE_CTX_PARAMS *promote;
     const char *stage="preconditions";
     ULONG registration[46]={0},bind=NV2080_ENGINE_TYPE_GRAPHICS;
-    ULONG query[124]={0},slot,base,channelId,doorbellConfig,classes[5]={AMPERE_B,
+    ULONG query[124]={0},slot,base,doorbellConfig,classes[5]={AMPERE_B,
         NVX_RM_CLASS_AMPERE_COMPUTE_B,NVX_RM_CLASS_KEPLER_I2M_B,
         NVX_RM_CLASS_FERMI_2D_A,NVX_RM_CLASS_AMPERE_DMA_COPY_B};
-    NvU32 expectedToken;
+    NvU32 expectedToken,channelId;
     UCHAR schedule[2]={1,0};
     BOOLEAN ok=FALSE;
     if(!dev||!lease||!backing||!gpuVa||!bufferId||!dev->GspGrPromotionAccepted||
-       !dev->GspClientGrLayout.count||!dev->GspGartReady||dev->GspMmuFaultQueued||
+       !dev->GspClientGrLayout.count||!dev->GspGartReady||
+       dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued||
        __sync_lock_test_and_set(&NvxGrUserSubmitBusy,1)) return FALSE;
     for(slot=0;slot<NVX_3D_CLIENT_SESSION_SLOTS;slot++)
         if(dev->Nvx3dClientSessions[slot].ClientToken==lease->ClientToken) break;
@@ -196,17 +202,21 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     stage="kernel graphics context";
     if(!NvxGspAlloc(dev,c->Tsg,base+6,KERNEL_GRAPHICS_CONTEXT,NULL,0)) goto fail;
     chan.gpFifoOffset=gpuVa+0x9000;chan.gpFifoEntries=512;
-    /* Reserve a different hardware identity for each live session. OpenRM's
-     * host-to-GSP allocation uses precisely these fixed USERD page/index flags.
-     * Boot CE/GR use 1/2; application channels occupy 3..34. */
-    channelId=slot+3U;c->HardwareChannelId=channelId;
+    /* The actual upstream allocator chooses the ChID and enforces USERD
+     * owner isolation. This adapter supplies OS ownership, not page arithmetic. */
+    stage="upstream channel-ID allocation";
+    if(!dev->GspChannelIdHeap&&
+       nvx_openrm_chid_heap_create(&dev->GspChannelIdHeap)!=NV_OK) goto fail;
+    if(nvx_openrm_chid_alloc(dev->GspChannelIdHeap,&c->ClientToken,
+            NVX_GR_CLIENT_USERD_OFFSET,&channelId)!=NV_OK) goto fail;
+    c->HardwareChannelId=channelId;c->HardwareIdAllocated=TRUE;
     if(!nvx_openrm_channel_identity(channelId,0,&chan.flags,&expectedToken)) goto fail;
     chan.hContextShare=c->ContextShare;chan.engineType=NV2080_ENGINE_TYPE_GRAPHICS;
     chan.hObjectError=c->Notifier;chan.hUserdMemory[0]=c->Memory;
-    chan.userdOffset[0]=0xb400;chan.internalFlags=0x19;
+    chan.userdOffset[0]=NVX_GR_CLIENT_USERD_OFFSET;chan.internalFlags=0x19;
     chan.instanceMem.base=(ULONG64)physical.QuadPart+0xa000;
     chan.instanceMem.size=0x1000;chan.instanceMem.addressSpace=1;
-    chan.userdMem.base=(ULONG64)physical.QuadPart+0xb400;
+    chan.userdMem.base=(ULONG64)physical.QuadPart+NVX_GR_CLIENT_USERD_OFFSET;
     chan.userdMem.size=0x200;chan.userdMem.addressSpace=1;
     chan.ramfcMem.base=(ULONG64)physical.QuadPart+0xb000;
     chan.ramfcMem.size=0x200;chan.ramfcMem.addressSpace=1;
@@ -267,7 +277,7 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     doorbellConfig=VideoPortReadRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+c->RunlistBase+8));
     if(doorbellConfig==0xffffffffU||(doorbellConfig&0xffff0000U)==0xbadf0000U) goto fail;
     if(!nvx_openrm_channel_identity(channelId,(doorbellConfig>>16)&0x7fU,
-                                   &chan.flags,&expectedToken)) goto fail;
+            &chan.flags,&expectedToken)) goto fail;
     /* GET_WORK_SUBMIT_TOKEN is not implemented by the pinned direct GSP
      * path. Supply the host-RM service using the explicitly reserved ChID.
      * Avoid sending the known-unsupported firmware control on each open. */
@@ -281,6 +291,8 @@ BOOLEAN NvxGspOpenClientChannel(PVOID extension,NVX_3D_CHANNEL_LEASE *lease,
     ok=NvxGspGetClientChannel(dev,lease);
     LogStr("NVX [GR-CLIENT]: private queue verified token=");LogHex(c->ClientToken);
     LogStr(" channel=");LogHex(c->Channel);LogStr(" submit-token=");LogHex(c->SubmitToken);
+    LogStr(" USERD-page=");LogHex(channelId/8U);
+    LogStr(" USERD-slot=");LogHex(channelId%8U);
     LogStr(" queueVA=");LogHex(c->GpuVa);LogStr(" contextVA=");
     LogHex(c->GpuVa+NVX_GR_CLIENT_CONTEXT_OFFSET);LogStr("\n");
     goto done;

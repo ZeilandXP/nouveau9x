@@ -433,6 +433,14 @@ static BOOLEAN NvxGspCall(PNVX_DEVICE_EXTENSION dev,ULONG expected,
                 if(words[20]==0x38) dev->NativeDisplayFaulted=TRUE;
             } else if(function==0x101b) {
                 if(words[14]<36) return FALSE;
+                /* Initial firmware setup has a separately recorded baseline.
+                   A new assertion after GR was verified is device-wide
+                   evidence; independent client queues must also stop. */
+                if(dev->GspGraphicsCommandVerified&&words[20]>dev->GspAssertCount) {
+                    dev->GspGraphicsDeviceFaulted=TRUE;
+                    dev->GspGraphicsChannelFaulted=TRUE;
+                    LogStr("NVX [GR]: runtime firmware assertion; device graphics quarantined.\n");
+                }
                 dev->GspAssertCount=words[20];
                 LogStr("NVX [RM]: firmware assertion count=");LogHex(words[20]);LogStr("\n");
             } else if(function==0x1004) {
@@ -445,7 +453,7 @@ static BOOLEAN NvxGspCall(PNVX_DEVICE_EXTENSION dev,ULONG expected,
                 if(words[21]==2) dev->GspGraphicsChannelFaulted=TRUE;
                 for(ULONG i=0;i<NVX_3D_CLIENT_SESSION_SLOTS;i++) {
                     NVX_GR_CLIENT_CHANNEL *c=&dev->Nvx3dClientSessions[i].Graphics;
-                    if(c->ClientToken&&c->HardwareChannelId==words[21]) {
+                    if(c->ClientToken&&c->HardwareIdAllocated&&c->HardwareChannelId==words[21]) {
                         c->Faulted=TRUE;c->Ready=FALSE;
                     }
                 }
@@ -3648,8 +3656,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     ULONG64 fenceVa,pushVa,fifoEntry;
     if(!dev||!nvc0Dwords||!dwordCount||dwordCount>NVX_3D_MAX_PUSH_DWORDS||
        !pushVirtual||!pushGpuVa||!pushBytes||!dev->GspInitialized||
-       !dev->GspGraphicsChannelReady||!dev->GspGraphicsCommandVerified||
-       dev->GspGraphicsChannelFaulted||dev->GspMmuFaultQueued||
+       dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued||
        !dev->GspDmaVirtual||
        !completedFence||
        dwordCount>(0xffffffffU/sizeof(ULONG))-tailCount)
@@ -3671,7 +3678,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     *completedFence=fenceValue;
 
     scratch=(PUCHAR)channel->Virtual;
-    userd=(volatile ULONG *)(scratch+0xb400);
+    userd=(volatile ULONG *)(scratch+NVX_GR_CLIENT_USERD_OFFSET);
     fence=(volatile ULONG *)(scratch+0x5000);
     fifo=(volatile ULONG64 *)(scratch+0x9000);
     push=(PULONG)pushVirtual;
@@ -3735,11 +3742,11 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
             __sync_lock_release(&NvxGrUserSubmitBusy);
             return TRUE;
         }
-        if(channel->Faulted||dev->GspMmuFaultQueued) break;
+        if(channel->Faulted||dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued) break;
         VideoPortStallExecution(100U);
     }
     if(fence[0]!=(ULONG)fenceValue&&!channel->Faulted&&
-       !dev->GspMmuFaultQueued) {
+       !dev->GspGraphicsDeviceFaulted&&!dev->GspMmuFaultQueued) {
         ULONG64 visibleEntry=fifo[put];
         LogStr("NVX [NVC0-BATCH]: retry doorbell fifoIndex=");LogHex(put);
         LogStr(" expectedEntry=");LogHex(fifoEntry);
@@ -3764,7 +3771,7 @@ BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
                 __sync_lock_release(&NvxGrUserSubmitBusy);
                 return TRUE;
             }
-            if(channel->Faulted||dev->GspMmuFaultQueued) break;
+            if(channel->Faulted||dev->GspGraphicsDeviceFaulted||dev->GspMmuFaultQueued) break;
             VideoPortStallExecution(100U);
         }
     }

@@ -322,9 +322,10 @@ typedef struct NVX_GR_CLIENT_CHANNEL {
     ULONG SubmitToken, RunlistBase, Put, HardwareChannelId;
     ULONG DrawTraceCount, CompletedBatches;
     BOOLEAN Ready, Faulted, Promoted, Scheduled, Submitting;
-    BOOLEAN TsgAllocated, NotifierAllocated, MemoryAllocated;
+    BOOLEAN TsgAllocated, NotifierAllocated, MemoryAllocated, HardwareIdAllocated;
     ULONG64 LastFence, CompletedFence;
 } NVX_GR_CLIENT_CHANNEL;
+#define NVX_GR_CLIENT_USERD_OFFSET 0xb400U
 #define NVX_GR_CLIENT_CONTEXT_OFFSET 0x200000U
 #define NVX_GR_CLIENT_BACKING_BYTES (NVX_GR_CLIENT_CONTEXT_OFFSET + 12U*1024U*1024U)
 typedef struct NVX_3D_CLIENT_SESSION_ENTRY {
@@ -491,6 +492,7 @@ typedef struct _NVX_DEVICE_EXTENSION {
     BOOLEAN GspGraphicsTriangleVerified;
     BOOLEAN GspGraphicsClientTriangleVerified;
     BOOLEAN GspGraphicsChannelFaulted;
+    BOOLEAN GspGraphicsDeviceFaulted;
     BOOLEAN GspGraphicsUserAllocReady;
     BOOLEAN GspGraphicsUserSubmitReady;
     ULONG64 Nvx3dNextBufferId;
@@ -521,6 +523,7 @@ typedef struct _NVX_DEVICE_EXTENSION {
     ULONG GspGraphicsSubmitToken;
     ULONG GspGraphicsGPPut;
     NVX_GR_LAYOUT GspClientGrLayout;
+    PVOID GspChannelIdHeap;
     ULONG RpcTxSequence,RpcRxSequence;
     NV2080_CTRL_GR_GET_CTX_BUFFER_INFO_PARAMS GrContextInfoParams;
     UCHAR RpcTxRecord[262144];

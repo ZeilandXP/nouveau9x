@@ -3394,14 +3394,14 @@ validate_batch_done:
         if(!Nvx3dClientAcceptsWorkLocked(engine,header.ClientToken)||
            !channel||!channel->Ready||channel->Faulted||channel->Submitting||
            !engine->GspGraphicsUserAllocReady||
-           !engine->GspGraphicsChannelReady||
-           engine->GspGraphicsChannelFaulted||engine->GspMmuFaultQueued) {
+           engine->GspGraphicsDeviceFaulted||engine->GspMmuFaultQueued) {
             LogStr("NVX [NVC0-BATCH]: reject channel/session owner=");
             LogHex(channel?channel->Channel:0);
             LogStr(" token=");LogHex(header.ClientToken);
             LogStr(" userAlloc=");LogHex(engine?engine->GspGraphicsUserAllocReady:0);
-            LogStr(" ready=");LogHex(engine?engine->GspGraphicsChannelReady:0);
-            LogStr(" fault=");LogHex(engine?engine->GspGraphicsChannelFaulted:0);
+            LogStr(" ready=");LogHex(channel?channel->Ready:0);
+            LogStr(" clientFault=");LogHex(channel?channel->Faulted:0);
+            LogStr(" deviceFault=");LogHex(engine->GspGraphicsDeviceFaulted);
             LogStr(" mmu=");LogHex(engine?engine->GspMmuFaultQueued:0);
             LogStr("\n");
             Nvx3dUnlockBuffers();status=ERROR_DEVICE_NOT_READY;

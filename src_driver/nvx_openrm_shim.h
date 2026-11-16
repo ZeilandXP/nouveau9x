@@ -34,6 +34,13 @@ void  nvx_reg_write08(void *base, NvU32 offset, NvU8 val);
 NvBool nvx_openrm_channel_identity(NvU32 channelId, NvU32 runlistId,
                                   NvU32 *allocationFlags, NvU32 *submitToken);
 
+/* Serialized by the caller's GR lifecycle lock; owner storage stays alive
+ * until confirmed RM channel teardown and successful ID release. */
+NV_STATUS nvx_openrm_chid_heap_create(void **result);
+void nvx_openrm_chid_heap_destroy(void **state);
+NV_STATUS nvx_openrm_chid_alloc(void *, NvU64 *, NvU32 userdOffset, NvU32 *channelId);
+NV_STATUS nvx_openrm_chid_free(void *, NvU64 *, NvU32 channelId);
+
 /* Delays and timing */
 void  nvx_stall_us(NvU32 microseconds);
 void  nvx_delay_ms(NvU32 milliseconds);

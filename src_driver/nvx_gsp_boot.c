@@ -904,6 +904,11 @@ VOID NvxGspShutdown(PVOID HwDeviceExtension) {
             VideoPortStallExecution(20);
         }
 
+        /* Host channel identities can be retired after RM channels are gone
+           and engines are halted. Failed teardown above retains this heap. */
+        nvx_openrm_chid_heap_destroy(&devExt->GspChannelIdHeap);
+        VideoPortZeroMemory(devExt->Nvx3dClientSessions,sizeof(devExt->Nvx3dClientSessions));
+
         /* The GR backing can be GPU-visible; release it only after the same
            confirmed RM teardown and engine halt as the GSP staging buffer. */
         if(devExt->GspFaultQueueVirtual) {
