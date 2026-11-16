@@ -1,206 +1,140 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 16, 2026. Latest test build: **3.0.0.237**.
+Updated November 16, 2026. Latest tested package: **3.0.0.237**.
 
-### v3.0.0.237 alignment fix and target captures (test in progress)
+## Current verified status
 
-- v236 exposed a concrete screen-creation failure: TLS requests 128 KiB
-  alignment, but the VRAM-to-GART fallback replaced it with 4 KiB. GPUVA
-  0x12a10000 consequently failed the shim's own requested-alignment check.
-  Guest trace confirms kind=8/f=1 and Error allocating TLS area. This explains
-  this run's software fallback, before any geometry coherency validation.
-- Preserve the original alignment when falling back to GART. The GEM mock
-  now models 64 KiB minimum alignment and deliberately starts at the observed
-  misaligned hole, preventing an accidentally 2 MiB-aligned mock from hiding it.
-- Gears now captures its third hardware frame before SwapBuffers using
-  glReadPixels, then captures the presented client area using GDI BitBlt.
-  Records GL errors and dominant RGB coverage. Files on the guest are
-  C:\wglgears-render.ppm and C:\wglgears-present.ppm; the full runner extracts
-  them beside the timestamped log if this run records their creation.
-  These diagnostics add synchronization/readback work and affect measured FPS.
-- Host checks passed with the alignment fix. Hardware result pending.
+RTX 3070 / GA104 runs the Mesa Nouveau WGL ICD on XP x64. The user confirms
+that gears now looks good, with complete gears. The captured third frame also
+shows complete red, green and blue gears. Its GL back-buffer readback and GDI
+client-area capture are byte-for-byte identical at 300x300, including RGB
+coverage (red=17214, green=4750, blue=3637). glReadPixels reports no GL error.
 
-### v3.0.0.236 shadow coherency fix
+Latest VFIO log: `test_logs/v3.0.0.237-20261116-181922.log` (vm_serial.log).
+Captures with that prefix: `-wglgears-render.ppm`, `-wglgears-present.ppm`,
+and a host-converted `-wglgears-render.png` for viewing. This proves the sampled
+image reaches the window unchanged; it is not exhaustive rendering validation.
 
-- Replaced access-flag-gated whole-BO shadow uploads with changed-dword
-  publication for every mapped BO referenced by a submission. This covers
-  upstream access=0/cached-map CPU writes and preserves unchanged GPU words.
-- Each mapped shadow tracks a baseline. The first publication initializes
-  previously undefined backing to match the shadow (including zero stores).
-  GPU read refresh merges unpublished CPU words instead of discarding them.
-  Partial uploads keep the shadow's read-freshness fence unchanged, so a later
-  CPU read still refreshes untouched words changed by the GPU.
-  Changed uploads wait for the previous BO fence; failed final unmaps retain
-  the shadow for retry rather than dropping unpublished data.
-- The first 48 changed ranges per process log pushbuf item kind=19:
-  a=BufferId, b=offset, c=uploaded bytes, d=map access, e=GPU readback success,
-  f=sample matches CPU. Up to 64 bytes are independently read back per range;
-  a mismatch fails publication. Samples do not validate complete geometry.
-- All host checks passed, including regression coverage for
-  writes via READ-labelled maps, preserving GPU changes elsewhere in a BO,
-  unchanged repeat flushes, merge on refresh, and initial backing contents.
-- Hardware log: test_logs/v3.0.0.236-20261116-181522.log. Booted the expected
-  driver; native NVX_3D_RESULT passed, but gears and the cube used GDI Generic
-  because TLS alignment was rejected. No hardware drawing correctness claim.
-  One firmware assertion remains. Two earlier build attempts were stopped
-  before deployment to cover initial-zero/partial-upload freshness edge cases.
+- Gears: NV170, 118 frames / 6 seconds = 19.667 FPS, with diagnostics enabled.
+- Cube: 300 frames / 5.2888 seconds = 56.7 FPS; OPENGL_RESULT=RENDERED.
+- Native NVX_3D_RESULT, native clear and semantic color-clear checks PASS.
+- All recorded dirty-upload GPU samples report readback/match success,
+  including a READ-labelled mapping. Samples check at most 64 bytes per range.
+- Host checks and XP import/subsystem audits passed. Mesa is clean after the
+  build script restored its temporary patches. VM has shut down.
+- Full runner exits 0 and its hardware OpenGL gate passes. Guest suite still
+  has failures: D3D9 crashes with 0xC0000005 and x86 gears lacks a matching ICD.
+  The batch's ALL_BENCHMARKS_FINISHED PASS is unconditional and overstates this.
+- One firmware assertion is logged during initialization, as in earlier runs.
 
-## Current status
+## Changes that restored drawing
 
-The XP x64 miniport and Mesa Nouveau WGL ICD run on a passthrough RTX 3070. The
-bounded NVC0 test submits hardware draws, verifies green pixels by readback,
-and completes its semaphore. Standalone WGL gears has reached the `NV170`
-renderer on real hardware, but image correctness, repeat context creation,
-and the complete application path remain unresolved.
+1. Nouveau maps BOs shared read/write upstream; its access flags describe
+   synchronization. It legitimately calls BO_MAP(access=0) and writes data.
+   XP patches 0012/0028 labelled these mappings READ, while the old submission
+   loop skipped their uploads. The old whole-BO upload also risked replacing
+   GPU-written neighbours with stale CPU data.
+2. v236 introduced baseline-based changed-dword publication for every mapped
+   BO referenced by a submission, independent of map access labels. Initial
+   publication initializes undefined GPU backing to match the shadow, including
+   zero stores. Refresh merges pending CPU changes, and partial uploads retain
+   stale read-freshness until a real download. Final failed unmaps retain data.
+   Existing vertex-range helpers now publish pending changes without replacing
+   unchanged words. Host regressions cover these ownership/freshness cases.
+3. v236 hardware could not exercise drawing: VRAM-to-GART TLS fallback reset
+   requested 128 KiB alignment to 4 KiB. GPUVA 0x12a10000 then failed our own
+   alignment check (kind=8/f=1, Error allocating TLS area), forcing GDI Generic.
+   Log: test_logs/v3.0.0.236-20261116-181522.log.
+4. v237 preserves the original TLS alignment across fallback. GEM regression
+   deliberately starts at the observed misaligned hole; its mock now models
+   64 KiB minimum alignment rather than hiding the problem with 2 MiB rounding.
+   Hardware rendering and visually correct gears were then verified.
 
-### Latest allocation experiment: v3.0.0.235
+The coherency changes corrected the observed drawing. We did not isolate which
+old input range or whole-BO overwrite produced the original missing red gear.
 
-The prior XP patches `0023` and `0024` forced WGL resources toward shared/linear
-GART storage and forced depth memory kind to zero. Those patches are no longer
-applied by the XP Mesa build scripts. Nouveau GEM requests now carry tile mode
-and `tile_flags[15:8]` memory kind across the XP DRM shim and the fixed-size
-miniport ABI. The miniport installs the requested kind in the VRAM leaf PTEs,
-invalidates the VA space once per range, and restores kind zero before freeing.
-Kinded allocations are rounded to the 64 KiB PTE granularity. GART allocations
-remain linear and reject kind/tile requests rather than silently misreporting
-placement. ABI version is now 22.
+## Normal allocation / upstream comparison
 
-Host checks passed: `make -C src_driver check`, including the new ABI and GEM
-shim cases for kind preservation, invalid kinds, and honoring alignment. The
-Mesa submodule is clean after the build scripts restored their temporary XP
-patches. The XP import/subsystem audit passed for all packaged binaries.
+The v235 allocation changes are retained and committed. XP build scripts no
+longer apply forced-linear/shared-target patch 0023 or depth-kind-zero patch
+0024. ABI 22 carries tile mode and an 8-bit memory kind in the existing fixed
+allocation size. Miniport installs VRAM PTE kinds, invalidates once per range,
+and restores kind zero before free; kinded sizes are rounded to 64 KiB.
+GART remains linear and cannot silently replace tiled/kinded storage.
 
-VFIO log: `test_logs/v3.0.0.235-20261116-174247.log` (`vm_serial.log` points to
-the latest run). Hardware evidence:
+Observed kinds are consistent with pinned Nouveau TU102+ policy: generic
+color uses kind 6, and the selected S8Z24 depth uses kind 3. Earlier notes
+expecting color kind 0xfe were incorrect for Ampere. OpenRM/UVM establishes
+PTE encoding and kernel ownership; Nouveau generates OpenGL draw/target state.
 
-- The first 64-bit gears run selected a non-generic format, reported
-  `GL_RENDERER = NV170`, and completed 106 frames in 6 seconds (17.667 FPS).
-- The miniport logged normal Nouveau PTE-kind installation for VRAM allocations
-  (kinds 6 and 3) and reset those ranges on free. No image capture was made, so
-  this does not prove the gears are drawn correctly. The user reports that the
-  gears looked the same after this allocation change; the missing/red gear
-  geometry is still present. Treat this experiment as an allocation-path
-  validation, not a visual correctness fix.
-- `[NVX_3D_RESULT] PASS` and `GR RESULT: hardware triangle draw, green pixel
-  readback, and semaphore completed successfully!`.
-- The normal framebuffer heap could not fit Nouveau's 0x04080000-byte TLS BO;
-  it fell back to GART, with placement reported as GART.
-- The full runner exited with the hardware-OpenGL gate failing. Antigravity's
-  separate audit reports `[OPENGL_RESULT] SOFTWARE` in one launch and fails to
-  create the ICD context (`error=126`) in another. A later gears launch does
-  reach `NV170`, but a subsequent context attempt fails with error 183. The
-  64-bit test process exits with `0xC0000005`; D3D9 reports no HAL / returns
-  unavailable. These are separate failures from the successful first gears
-  render and bounded NVC0 test.
-- The log reports one firmware assertion. Display verification shows both
-  heads active. The full suite is **not passing**.
+## Remaining issues and next work
 
-## Issues to resolve
+1. **Performance:** correctness is improved, but the CPU presentation path is
+   expensive. WGL maps/copies the rendered image for StretchDIBits. VRAM raw
+   downloads use a 4 KiB scratch window and a separate completed CE copy for
+   each chunk (360000 bytes at 300x300 means 88 chunks for an unpadded image).
+   Shadow scans, changed-word uploads, waits, and serial diagnostics add cost.
+   GPU timing/clock measurements have not been collected, so no percentage
+   attribution or GPU power-state diagnosis is established. Next add timings
+   around submission, shadow publication, transfer/readback, and GDI present;
+   then use a larger/ring staging buffer, batch copies and waits, and ultimately
+   present by GPU copy to scanout or directly mapped shared backing. Retain
+   coherency correctness while optimizing. Captures and first-48 range sample
+   readbacks themselves add diagnostic overhead; current FPS is not a clean
+   production benchmark. Fine-grained changed runs may issue many small uploads.
+2. **32-bit ICD missing:** only x64 nvxogl64.dll and nvxmesa.dll are packaged.
+   install.bat removes the Wow6432Node ICD entry. The x86 gears process cannot
+   load x64 DLLs and reports context error 183. Hardware-labelled display pixel
+   formats do not prove an x86 ICD exists. Build/deploy/register an x86 ICD and
+   log per-DLL loader errors. This x86 failure is not proof of broken repeated
+   x64 context/channel creation. Test that lifecycle independently.
+3. **WineD3D:** D3D9 loads and creates IDirect3D9, identifies its adapter as GTX
+   470/nv4_disp.dll, then the 64-bit test crashes (0xC0000005). Trace the failing
+   D3D caps/device call and collect a crash address/stack. The adapter name is
+   consistent with WineD3D's capability-based fallback identity, not a change
+   in physical GPU. Upstream select_card_handler/wined3d_guess_card uses a
+   fallback when renderer matching fails; its NVIDIA D3D11 fallback is GTX470.
+   The NT5 driver-name table supplies nv4_disp.dll. The packaged old DLL has
+   these strings/functions; its exact build revision and decision trace have
+   not been established. Reference source:
+   https://github.com/wine-mirror/wine/blob/wine-3.0/dlls/wined3d/directx.c
+   Expose actual PCI identity through an appropriate query or adapt WineD3D's
+   renderer mapping later; changing the label alone does not improve rendering.
+4. **Test reporting:** batch ERRORLEVEL is expanded inside parenthesized blocks,
+   so recorded child return codes can be stale. The final PASS is unconditional.
+   Correct those and report per-application failures, including x86 availability.
+5. **Capacity:** only the confirmed aperture-backed VRAM heap is allocated;
+   the 64.5 MiB TLS BO falls back to GART. Preserve placement and alignment.
+   Broader VRAM management and shader-TLS placement remain performance work.
+6. **Firmware / synchronization:** investigate the initialization assertion.
+   XP patch 0020 still bypasses the upstream WGL end-of-frame wait, while the
+   CPU texture transfer supplies its own synchronization. Audit this lifecycle
+   before expanding asynchronous/multiple-application workloads.
 
-1. **Visual correctness of gears:** the normal-allocation experiment did not
-   change the user's visual result. Capture the actual window or GPU readback
-   while gears runs and compare red/green/blue gear coverage. The prior user
-   image showed most of the red gear missing. Renderer string and frame count
-   alone do not prove correct geometry/depth/presentation. Next trace vertex,
-   index, depth, and color-target state/submission through the draw and swap;
-   do not continue treating allocation kind as the leading explanation without
-   evidence from a captured target.
-2. **32-bit ICD missing:** the error-183 gears launch is the 32-bit executable,
-   not proof that a second 64-bit context cannot be created. Only PE32+ x64
-   `nvxogl64.dll` and `nvxmesa.dll` are built/deployed. `install.bat` explicitly
-   deletes the Wow6432Node ICD registration. The x86 gears loader tries these
-   x64 DLL names and has no packaged x86 ICD. Display-driver pixel formats can
-   still report PFD_GENERIC_FORMAT=NO without a usable x86 ICD. Build/deploy an
-   XP-compatible x86 Mesa ICD and register it in the 32-bit registry view.
-   Error 183 is not sufficient to diagnose a channel collision: the test does
-   not clear last error before context creation or report each DLL load error.
-3. **Antigravity OpenGL audit:** its launch can use software rendering or fail
-   with error 126 before creating a context. Determine why its selected pixel
-   format / ICD load differs from the standalone gears path, then ensure the
-   test reports the renderer for the same successful context.
-4. **D3D9:** current package reports no Direct3D HAL and the 64-bit test later
-   crashes. This is not covered by the OpenGL allocation change.
-5. **VRAM capacity:** the 128 MiB VRAM aperture does not fit the 64.5 MiB TLS
-   allocation after current reservations, so the shim retries it in GART.
-   Keep that fallback truthful and validate other tiled or kinded large BOs
-   cannot accidentally fall back to incompatible GART storage.
-6. **Normal allocation validation:** kinds 3 and 6 match this upstream Mesa's
-   TU102+ storage selection (S8Z24 and generic color respectively). The earlier
-   expectation of color kind 0xfe was incorrect for Ampere. Still validate
-   resource addresses, tile mode, and transferred pixels against the actual BOs.
+## Diagnostics and relevant files
 
-### Code comparison: remaining drawing corruption
+- mesa_patches/nvx_nouveau_bo.c/.h: baseline/dirty publication, merge on refresh,
+  first 48 changed-range samples per process. Pushbuf item kind=19 fields:
+  a=BufferId, b=offset, c=upload bytes, d=map access, e=readback ok, f=match.
+- mesa_patches/nvx_xf86drm.c: mapped-reference publication and GEM layout/domain/
+  kind/alignment translation. mesa_patches/nvx_winsys.c: upload/download escapes.
+- src_driver/nvx_gsp.c: NvxGspReadUserBuffer 4 KiB CE scratch readback, PTE-kind
+  mapping. src_driver/nvxmp.c: allocation, upload/download IOCTL lifecycle.
+- src_driver/nvx_3d_abi.h: ABI 22. src_driver/nvx_gsp.h: internal BO metadata.
+- test/nvx_winsys_test.c: dirty-map/GPU neighbour/refresh/initial-zero cases.
+  test/xf86drm_shim_test.c: memory kinds and fallback alignment regression.
+- test/3d_tests/glxgears_main.cpp: third hardware-frame GL and GDI captures,
+  dominant color counts. test/test_full_driver.sh: version/build/audit/VFIO,
+  extraction of captures whose creation is recorded by the current run.
+- mesa_patches/0002-nvx-gallium-bridge.patch: CPU texture-map/StretchDIBits
+  presenter. mesa_patches/0020-nouveau-xp-async-swap.patch: wait bypass.
+- test/test_gpu_accel.c: cube, native 3D checks and failing D3D9 section.
+  test/update_disk_driver_user.sh: offline installation/guest test batch.
+- test/build_mesa_xp64.sh and test/apply_mesa_xp_patches.sh: Mesa package build;
+  upstream submodules stay unchanged after build. dist_full/install.bat and
+  dist_full/nvx.inf: ICD registration. test/wined3d_xp: packaged WineD3D DLLs.
 
-Analysis only; no code change or new hardware run in this revision.
-
-- Strongest concrete semantic mismatch is CPU mapping/coherency. Upstream
-  `nouveau.c:nouveau_bo_map` always uses PROT_READ|PROT_WRITE and MAP_SHARED;
-  its `access` argument controls synchronization, not mapping permissions.
-  Upstream `nouveau_buffer.c` legitimately maps with access=0 then writes:
-  migration at lines 822-825, user upload at 892-895, scratch runout at 988.
-  XP patches 0012/0028 instead turn access=0 into MAP_READ. The submission
-  loop (`nvx_xf86drm.c:942`) skips shadows without WRITE, and
-  `NvxNouveauBoFlush` also returns success without uploading them. This can
-  submit stale/zero vertex or other buffer data despite a completed fence.
-  Existing vertex-address range uploads and the immediate-triangle special
-  case cover selected packet shapes; they do not establish general equivalence
-  to upstream shared mappings. This is a confirmed contract mismatch, but its
-  responsibility for the observed gears image still needs a targeted check.
-- The shadow design also uploads entire WRITE-mapped BOs before GPU reads.
-  Upstream maps the same backing directly; it does not overwrite an entire BO
-  from a separate CPU snapshot on submission. Mixed CPU/GPU-written or
-  suballocated BOs need dirty-range/ownership handling to avoid overwriting
-  valid GPU results. Simply marking every shadow writable is insufficient.
-- Target selection itself looks consistent: upstream
-  `nvc0_miptree.c:tu102_choose_tiled_storage_type` selects color kind 6 and
-  S8Z24 kind 3, and upstream `nvc0_state_validate.c` emits RT/ZETA addresses,
-  dimensions, format, and tile mode. Current logs show color kind 6.
-  OpenRM/UVM's Turing PTE builder confirms kind and physical-address fields,
-  but OpenRM does not generate Nouveau's OpenGL framebuffer/draw state.
-- XP patch 0020 bypasses upstream WGL end-of-frame waiting for Nouveau, even
-  though the WGL presenter now reads pixels on the CPU. Presentation still
-  calls the upstream texture transfer path, which synchronizes its readback;
-  therefore the bypass is an audit target, not proof of a race. Check the
-  staging copy fence and CPU shadow refresh before attributing missing parts
-  to presentation. The native color target has not been captured yet.
-- Next discrimination: compare CPU and GPU bytes for each actual gears
-  vertex/index/constant range immediately before consumption, including
-  access=0 and cached mappings. Then capture the rendered target through
-  Nouveau's tiled-to-linear transfer before StretchDIBits, and compare with
-  the displayed image. This distinguishes input corruption from depth/render
-  state and presentation without guessing from frame completion.
-
-## Next steps
-
-1. Add focused logging of each GEM_NEW request/result (domain, size, alignment,
-   tile mode, kind) and correlate allocation IDs with the WGL target/depth
-   resources. Do not log every small GART allocation in the serial stream.
-2. Capture an image or readback from the first successful `NV170` gears run;
-   compare target and depth surfaces before/after draw and swap.
-3. Provide an x86 ICD build/deployment path and log DLL load failures in the
-   x86 test. Independently test repeated x64 contexts before concluding that
-   sequential context/channel reuse is still broken.
-4. Fix the Antigravity ICD load/context path and keep the strict hardware gate
-   enabled for the next hardware run.
-5. Address D3D9 separately after the OpenGL context and image path are stable.
-
-## Key files
-
-- `mesa_patches/nvx_xf86drm.c`: GEM_NEW domain/tile/kind translation and
-  truthful placement response.
-- `mesa_patches/nvx_winsys.c`, `mesa_patches/nvx_nouveau_bo.c`: XP BO ABI
-  validation and allocation forwarding.
-- `src_driver/nvx_3d_abi.h`: version 22 fixed-size allocation ABI and
-  validation.
-- `src_driver/nvxmp.c`: RM VRAM/GART allocation lifecycle and PTE-kind setup,
-  reset, and cleanup.
-- `src_driver/nvx_gsp.c`, `src_driver/nvx_gsp.h`: external VRAM PTE-kind range
-  updates and MMU invalidation.
-- `test/apply_mesa_xp_patches.sh`, `test/build_mesa_xp64.sh`: the normal
-  allocation build no longer applies Mesa patches 0023/0024.
-- `test/xf86drm_shim_test.c`, `src_driver/tests/3d_abi_test.c`: host coverage
-  for memory-kind transport and validation.
-- `test/test_full_driver.sh`, `test_logs/v3.0.0.235-20261116-174247.log`:
-  package build, guest run, and latest results.
-- `test/3d_tests/glxgears_main.cpp`, `mesa_patches/nvx_wgl_bridge.c`:
-  standalone gears and XP WGL context bridge.
+Commits this session: ea62e17 (dirty publication), 74a2f61 (allocation kinds),
+67d04fc (partial-upload freshness), ace556d (TLS alignment and target captures).
+Unrelated pre-existing edits remain unstaged; do not discard or commit them
+without reviewing their ownership.
