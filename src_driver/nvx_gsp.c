@@ -2013,8 +2013,11 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
        occupies scratch +0xb400..+0xb5ff. */
     grFence=(volatile ULONG *)(scratch+0x5000);
     grFenceVa=dev->GspScratchGpuVa+0x5000;
-    grData=(volatile ULONG *)(scratch+0xb600);
-    grDataVa=dev->GspScratchGpuVa+0xb600;
+    /* A 64x16 A8R8G8B8 target occupies a full 4KB page. The old
+       +0xb600 placement extended into RM's method buffer at +0xc000.
+       Page +0x6000 is disjoint from channel metadata and probe resources. */
+    grData=(volatile ULONG *)(scratch+0x6000);
+    grDataVa=dev->GspScratchGpuVa+0x6000;
     /* The spare final scratch page is a CE readback destination after the
        GR draw is fenced. It is outside the FIFO, USERD, semaphore and target. */
     grReadback=(volatile ULONG *)(scratch+0xe000);
@@ -2022,7 +2025,7 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
        unverified. Use this already-mapped coherent scratch word to isolate the
        target mapping from the report-semaphore method itself. */
     grFence[0]=0;grFence[1]=0x13579bdf;grFence[2]=0x2468ace0;
-    VideoPortZeroMemory((PVOID)grData,64);
+    VideoPortZeroMemory((PVOID)grData,4096);
     if(userd[0x88/4]||userd[0x8c/4]) {
         LogStr("NVX [GR]: fresh graphics USERD is not empty; submission skipped.\n");
         return FALSE;
@@ -2093,6 +2096,9 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
             push[n++]=0x67723000U+i;
         }
 
+        /* Application channels start from RM's initialized context. Keep
+           boot-only rasterizer/shader state out of Mesa's new channel. */
+        if(!reuseGlobalContext) {
         /* Test SET_COLOR_TARGET_FORMAT(0) -> DISABLED */
         push[n++]=(NVC56F_DMA_INCR_OPCODE_VALUE<<29)|(1U<<16)|(NVC797_SET_COLOR_TARGET_FORMAT(0)>>2);
         push[n++]=NVC797_SET_COLOR_TARGET_FORMAT_V_DISABLED;
@@ -2287,6 +2293,8 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
         push[n++]=0;
 #endif
 
+        } /* boot-only rendering probe */
+
         push[n++]=(NVC56F_DMA_INCR_OPCODE_VALUE<<29)|(1U<<16)|(NVC797_WAIT_FOR_IDLE>>2);
         push[n++]=0;
         push[n++]=(NVC56F_DMA_INCR_OPCODE_VALUE<<29)|(4U<<16)|(NVC797_SET_REPORT_SEMAPHORE_A>>2);
@@ -2314,7 +2322,9 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
         VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+0x30090),token);
     VideoPortWriteRegisterUlong((PULONG)((PUCHAR)dev->Bar0MmioVirtual+runlistBase+0x90),2);
     LogStr("NVX [GR]: rang channel doorbell token=");LogHex(token);LogStr(" chid=0x2\n");
-    LogStr("NVX [GR]: submitted SET_OBJECT, I2M inline-data upload, WAIT_FOR_IDLE and C797 semaphore.\n");
+    LogStr(reuseGlobalContext?
+        "NVX [GR]: application channel I2M/fence probe; rasterizer state left to Mesa.\n":
+        "NVX [GR]: submitted boot I2M, rasterizer and C797 semaphore probe.\n");
     for(wait=0;wait<100000;wait++) {
         if(grFence[0]==0x47524632) {
             break;

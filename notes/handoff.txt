@@ -1,6 +1,15 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026 after .212: normal process-exit ICD session close now releases the gears lease and allows the following cube to create a Nouveau channel. Gears reports 139 frames in six seconds. The cube still times out at its initial completion fence; its OPENGL_RESULT RENDERED marker is not proof of hardware rendering.
+Updated November 15, 2026: .213 candidate built; latest hardware evidence remains .212. Fixed a concrete overlap in the boot GR probe and removed boot rendering state from renewed application channels. Cube completion is still unproven until a new hardware run.
+
+## .213 candidate: isolate GR probe memory and application context state
+
+- Found a concrete scratch-layout overlap: the probe's 64x16 A8R8G8B8 target is 4096 bytes at +0xb600..+0xc5ff, overlapping RM's channel method buffer at +0xc000. Relocated target/I2M destination to the unused +0x6000 page and clear the full page before probing. Shader/texture resources at +0x7000/+0x8000 and channel metadata remain separate. Other users of +0x6000 are later synchronous operations, not part of channel creation.
+- Renewed channels now submit SET_OBJECT, bounded I2M data, WAIT_FOR_IDLE and the completion semaphore without the boot rasterizer/shader/target setup. Mesa initializes its own render state. The boot channel still executes the full rendering probe. This reduces a divergence from upstream's initialized application contexts; it does not establish the root cause of the cube failure.
+- Full-suite result gate now rejects logged native batch completion/kick/session failures even if the application emits OPENGL_RESULT RENDERED. This fixes the known .212 false-positive criterion, but still does not independently verify visible pixels.
+- Build: make -C src_driver full-gr-probe NVX_ENABLE_GR_CHANNEL_PROBE=1 NVX_ENABLE_GR_PROMOTE_PROBE=1 NVX_ENABLE_GR_SUBMISSION_PROBE=1 succeeded; output /tmp/nvx-213-build.log. No host tests or hardware run performed for this revision. Package miniport and INF updated to candidate .213; Mesa ICD unchanged.
+- Next hardware check: compare boot triangle readback, renewed-channel I2M verification, first native cube completion fence, and visible output. Keep timeout quarantine; do not interpret PB_GET at end as GPU execution completion. If still failing, examine engine completion/context state after renewal; overlap correction alone is not proof of a complete fix.
+- Relevant files: src_driver/nvx_gsp.c (NvxGspCreateGraphicsProbe), test/test_full_driver.sh (candidate version and native failure gate), dist_full/nvxmp.sys, dist_full/nvx.inf. Last measured failure remains test_logs/v3.0.0.212-20261115-204447.log.
 
 ## .212 candidate: close ICD kernel sessions on normal process exit
 

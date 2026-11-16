@@ -4,7 +4,7 @@ set -euo pipefail
 NVX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NVX_ARCHIVE="$NVX_ROOT/test_logs"
 NVX_STAMP="$(date +%Y%m%d-%H%M%S)"
-NVX_TEST_VERSION="3.0.0.212"
+NVX_TEST_VERSION="3.0.0.213"
 NVX_REQUIRE_HW_OPENGL="${NVX_REQUIRE_HW_OPENGL:-1}"
 NVX_RUN_LOG="$NVX_ARCHIVE/v$NVX_TEST_VERSION-$NVX_STAMP.log"
 NVX_TEST_FLAGS=()
@@ -332,5 +332,13 @@ fi
 if [ "$NVX_REQUIRE_HW_OPENGL" = "1" ] &&
    ! grep -q '\[OPENGL_RESULT\] RENDERED' "$NVX_RUN_LOG"; then
     echo "ERROR: hardware OpenGL was not proven; see $NVX_RUN_LOG" >&2
+    exit 1
+fi
+
+# Application frame counters can advance after the ICD loses its channel.
+# Never accept RENDERED when the native GPU submission path failed.
+if [ "$NVX_REQUIRE_HW_OPENGL" = "1" ] &&
+   grep -Eq '\[NVC0-BATCH\]: (submission did not complete|GPU kick/fence failed|reject channel/session)|kernel-rejected pushbuf' "$NVX_RUN_LOG"; then
+    echo "ERROR: native GPU submissions failed despite application frame markers; see $NVX_RUN_LOG" >&2
     exit 1
 fi
