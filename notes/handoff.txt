@@ -70,9 +70,13 @@ PTE encoding and kernel ownership; Nouveau generates OpenGL draw/target state.
 ## Remaining issues and next work
 
 1. **Performance:** correctness is improved, but the CPU presentation path is
-   expensive. WGL maps/copies the rendered image for StretchDIBits. VRAM raw
+   expensive. NvxGspSubmitNvc0Batch waits for every batch's fence before
+   returning, polling in 100 us intervals, serializing CPU/GPU work. WGL
+   maps/copies the rendered image for StretchDIBits. VRAM raw
    downloads use a 4 KiB scratch window and a separate completed CE copy for
-   each chunk (360000 bytes at 300x300 means 88 chunks for an unpadded image).
+   each chunk (360000 bytes at 300x300 means 88 chunks if read via this helper).
+   GART-backed staging downloads have a direct CPU-copy path and avoid that
+   VRAM scratch loop; do not assume every present incurs those 88 CE copies.
    Shadow scans, changed-word uploads, waits, and serial diagnostics add cost.
    GPU timing/clock measurements have not been collected, so no percentage
    attribution or GPU power-state diagnosis is established. Next add timings
