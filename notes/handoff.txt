@@ -1,6 +1,19 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026: .213 candidate built; latest hardware evidence remains .212. Fixed a concrete overlap in the boot GR probe and removed boot rendering state from renewed application channels. Cube completion is still unproven until a new hardware run.
+Updated November 15, 2026 after one .213 full-suite invocation: boot triangle pixels now verify, and the NV170 cube completes 300 frames with native draw fences and no native batch timeout. Later 32-bit ICD loading and gears context creation still fail. This is a partial hardware pass, not a complete Phase 2C pass.
+
+## .213 hardware result
+
+- Log: test_logs/v3.0.0.213-20261115-211531.log; command output /tmp/nvx-213-full-test.log. Host checks, driver build and XP import audit passed. Reused existing Mesa ICD, SHA256 f81fddfa2a063b68bcb4e2dc1e1155bb5a8f5584672b8ffa358868d109e3da0a (matches package manifest); no Mesa source changes in .213.
+- One full-suite invocation; auto-retry needed after an initial boot attempt produced no serial output. The successful boot exercised candidate .213, including the new application-channel I2M/fence diagnostic.
+- Boot rendering probe: green triangle pixel readback verified, 512 green + 512 white pixels. Previous readback mismatch did not recur after moving target away from channel metadata.
+- Renewed application channel: 16 I2M dwords verified; completion semaphore passed. Native cube renderer NV170; 300 frames in 4.9744 seconds (60.3 FPS), bridge reports 901 batches. Four logged native draws confirm expected/observed fences 5, 6, 11, 12. No NVC0-BATCH timeout/kick failure/session rejection or COPY-Q timeout found in this run.
+- Independent native clear tests passed 1024-pixel fence/readback and four-color matrix checks. OpenGL center sample is blue (0,0,255), GL error zero. These support GPU execution and readback, but do not independently establish correct visible cube geometry or window presentation.
+- 2D fills and GPU copy completion passed. Firmware assertion count remains boot baseline 1; do not claim zero assertions.
+- REMAINING: later 32-bit test cannot load ICD (wglCreateContext and direct LoadLibrary error 126); later gears uses GDI Generic software and another gears attempt fails context creation error 183. Cross-process ownership/context lifetime still requires investigation; this run only logs one fresh-channel verification. Do not count software gears FPS as hardware performance.
+- D3D remains incomplete: later Direct3DCreate9 returns NULL; D3D9_RESULT UNAVAILABLE; a TEST_COMPLETE marker is FAIL. Full script nevertheless exits 0 because it accepts any OPENGL_RESULT RENDERED and no native batch timeout. The .213 native-failure gate catches the former timeout false positive, but does not enforce all application/architecture results. Result aggregation remains an issue.
+- Isolated FB P2MF was configured, but no standalone PASS marker found; do not infer it passed from build/enable messages. The I2M and native rendering checks above are directly observed.
+- Session ended under the bounded runner; script reports Windows XP session completed. Do not infer graceful guest shutdown from that message alone. No second revision or successful guest run performed. Next: fix result aggregation, diagnose 32-bit ICD dependencies and trace subsequent application lease acquisition/cleanup, then confirm cube output visually.
 
 ## .213 candidate: isolate GR probe memory and application context state
 
@@ -63,8 +76,8 @@ Updated November 15, 2026: .213 candidate built; latest hardware evidence remain
 
 ## Latest Run & Artifacts
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.212-20261115-204447.log`
-- **Latest hardware-tested version**: `v3.0.0.212`
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.213-20261115-211531.log`
+- **Latest hardware-tested version**: `v3.0.0.213`
 - **Current state**: `.208` sends `NO_MAP | NONCONTIGUOUS | VIDMEM` (`0x40000210`) for FB page-list registration. Hardware accepted the registration and the isolated P2MF transfer passed.
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
 
