@@ -1486,6 +1486,7 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
     NVX_GR_LAYOUT grLayout;
     ULONG grMaxSubcontexts=0,grHeaderSupported=0;
     BOOLEAN grRequirementsValid=FALSE,grHeaderInfoValid=FALSE;
+    BOOLEAN reuseGlobalContext=dev&&dev->GspGrPromotionAccepted;
     BOOLEAN grStatusAvailable=FALSE;
     ULONG classCount,classIndex,grClass=0;
     BOOLEAN ampereAFound=FALSE,ampereBFound=FALSE;
@@ -1520,6 +1521,7 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
         LogStr("NVX [GR]: probe preconditions failed; graphics remains disabled.\n");
         return FALSE;
     }
+    dev->GspGrPromotionAccepted=FALSE;
     dev->GspGraphicsM2mfObjectHandle=0;
     dev->GspGraphicsCopyObjectHandle=0;
     dev->GspGraphics2dObjectHandle=0;
@@ -1813,7 +1815,15 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
             BOOLEAN valid=TRUE;
             _Static_assert(sizeof(NV2080_CTRL_GPU_PROMOTE_CTX_PARAMS)
                            <=sizeof(dev->GrContextInfoParams), "GR promote storage");
-            VideoPortZeroMemory(dev->GspGrContextVirtual,dev->GspGrContextLength);
+            /* Global privilege/FECS buffers survive a channel lease. OpenRM
+               tracks their initialization at device scope. */
+            if(!reuseGlobalContext)
+                VideoPortZeroMemory(dev->GspGrContextVirtual,dev->GspGrContextLength);
+            else for(i=0;i<grLayout.count;i++) {
+                if(grLayout.buffers[i].id<=2U)
+                    VideoPortZeroMemory((PUCHAR)dev->GspGrContextVirtual+
+                        grLayout.buffers[i].offset,(ULONG)grLayout.buffers[i].size);
+            }
             VideoPortZeroMemory(promote,sizeof(*promote));
             promote->engineType=NV2080_ENGINE_TYPE_GRAPHICS;
             promote->hChanClient=dev->GspClientHandle;
@@ -1827,6 +1837,7 @@ static BOOLEAN NvxGspCreateGraphicsProbe(PNVX_DEVICE_EXTENSION dev)
                 }
                 /* Matches kgrctxPrepareInitializeCtxBuffer's initialized IDs. */
                 if(id!=0&&id!=1&&id!=2&&id!=8&&id!=9&&id!=10&&id!=11) continue;
+                if(reuseGlobalContext&&id>=8U) continue;
                 entry=&promote->promoteEntry[initCount++];
                 entry->bufferId=(NvU16)id;
                 entry->gpuPhysAddr=(ULONG64)dev->GspGrContextPhysical.QuadPart+grLayout.buffers[i].offset;
@@ -2500,11 +2511,23 @@ BOOLEAN NvxGspRenewGraphicsChannel(PVOID extension)
 #if NVX_ENABLE_GR_CHANNEL_PROBE
     PNVX_DEVICE_EXTENSION dev=extension;
     ULONG release[4];
+    NVA06F_CTRL_STOP_CHANNEL_PARAMS stop={0};
+    NV2080_CTRL_GPU_EVICT_CTX_PARAMS evict={0};
     BOOLEAN ok=FALSE;
     if(!dev||!dev->GspInitialized||dev->GspMmuFaultQueued||
+       dev->GspGraphicsChannelFaulted||
        __sync_lock_test_and_set(&NvxGrUserSubmitBusy,1)) return FALSE;
     dev->GspGraphicsChannelReady=FALSE;
     dev->GspGraphicsCommandVerified=FALSE;
+    /* Match nvGpuOpsStopChannel: stop, evict GR VA bindings, then free. */
+    if(!NvxGspControl(dev,dev->GspGraphicsChannelHandle,
+                     NVA06F_CTRL_CMD_STOP_CHANNEL,&stop,sizeof(stop))) goto done;
+    evict.engineType=NV2080_ENGINE_TYPE_GRAPHICS;
+    evict.hClient=dev->GspClientHandle;
+    evict.hChanClient=dev->GspClientHandle;
+    evict.hObject=dev->GspGraphicsChannelHandle;
+    if(!NvxGspControl(dev,dev->GspSubdeviceHandle,
+                     NV2080_CTRL_CMD_GPU_EVICT_CTX,&evict,sizeof(evict))) goto done;
     release[0]=dev->GspClientHandle;
     release[1]=dev->GspDeviceHandle;
     release[2]=dev->GspGraphicsTsgHandle;

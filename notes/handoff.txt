@@ -1,6 +1,19 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026 after `.208` changed the FB page-list flags to OpenRM's video-memory values and passed the exact-address FB P2MF probe on hardware. Full OpenGL still does not complete. Latest hardware log: `test_logs/v3.0.0.208-20261115-195047.log`.
+Updated November 15, 2026 after the single .211 hardware run. Fresh channel recreation and FB P2MF probe pass; NV170 gears completes 129 frames in six seconds without logged submission stalls. Later cube still falls back to software after channel acquisition fails; full hardware OpenGL suite remains incomplete.
+
+## .211 tested: upstream stop/evict and global context lifetime
+
+- Adds OpenRM nvGpuOpsStopChannel sequence (STOP_CHANNEL then GPU_EVICT_CTX) before freeing a TSG and reusing backing. Any unacknowledged step stops renewal.
+- Preserve device-global context buffers across leases; clear/reinitialize only MAIN/PM/PATCH on channel recreation. Skip repeated initialization of global FECS/privilege buffers, following kgrctxPrepareInitializeCtxBuffer initialization scopes.
+- Clear GspGrPromotionAccepted before creation so a failed physical initialize cannot inherit an old success and execute uninitialized context memory. Do not retry renewal of a faulted channel.
+- Host checks, fresh Mesa/driver build and XP import audit pass. One VFIO run: test_logs/v3.0.0.211-20261115-203011.log.
+- Channel recreation now succeeds twice: physical initialization of the three per-channel buffers and VA binding both return NV_OK; GR-LIFETIME reports fresh channel verified for lease. .210 recreation regression resolved in this run.
+- Gears identifies GL_RENDERER NV170 and completes 129 frames in 6 seconds (21.5 FPS); no NVC0 batch timeout or kernel-rejected pushbuf logged in the completed run. This is application frame progress, not independent pixel/visual verification of gears.
+- Later cube falls back to GDI Generic (OPENGL_RESULT SOFTWARE) after Nouveau FIFO channel creation fails. Existing exclusive owner/ICD session cleanup is the next suspect; do not restore silent takeover of a live channel. Trace CHANNEL_CLOSE and CLIENT_CLOSE for the ICD token, not only the benchmark helper token. Process exit cleanup is not established.
+- Firmware assertion count remains at boot baseline 1 in the completed serial log. Full suite is still not a hardware OpenGL pass because later applications cannot acquire a channel.
+- Final result: FB P2MF PASS; two fresh-channel verification passes; suite exits 1 because later cube is SOFTWARE. VM completed the 180-second session and shut down. Paused after exactly one .211 hardware run.
+- .211 is current; the .210 and .209 sections below are historical.
 
 ## .210 FAILED candidate: class identity, GART publication, fresh channel lease
 
@@ -27,8 +40,8 @@ Updated November 15, 2026 after `.208` changed the FB page-list flags to OpenRM'
 
 ## Latest Run & Artifacts
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.210-20261115-202448.log`
-- **Latest hardware-tested version**: `v3.0.0.210`
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.211-20261115-203011.log`
+- **Latest hardware-tested version**: `v3.0.0.211`
 - **Current state**: `.208` sends `NO_MAP | NONCONTIGUOUS | VIDMEM` (`0x40000210`) for FB page-list registration. Hardware accepted the registration and the isolated P2MF transfer passed.
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
 
