@@ -6,11 +6,12 @@ static BOOLEAN NvxGspCopySmokeTest(PNVX_DEVICE_EXTENSION dev)
 {
     /* C56F/C7B5 535 ABI. Scratch layout: GPFIFO 0..1fff, instance 2000,
        USERD 3200, CE fault buffer 4000..8fff, init push 9000, source a000,
-       destination b000, completion c000. No scanout/VRAM is touched. */
+       destination b000, completion 3400 (outside both channel descriptors).
+       No scanout/VRAM is touched. */
     PUCHAR scratch=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET;
     volatile ULONG *userd=(volatile ULONG *)(scratch+0x3200);
     volatile ULONG *dst=(volatile ULONG *)(scratch+0xb000);
-    volatile ULONG *fence=(volatile ULONG *)(scratch+0xc000);
+    volatile ULONG *fence=(volatile ULONG *)(scratch+0x3400);
     volatile ULONG *backup=(volatile ULONG *)(scratch+0xf000);
     volatile ULONG *restored=(volatile ULONG *)(scratch+0xe000);
     PULONG src=(PULONG)(scratch+0xa000),push=(PULONG)(scratch+0x9000);
@@ -104,7 +105,7 @@ static BOOLEAN NvxGspCopySmokeTest(PNVX_DEVICE_EXTENSION dev)
     NVX_APPEND_COPY(vramVa,va+0xe000);
 #undef NVX_APPEND_COPY
     push[n++]=0x20038090; /* SET_SEMAPHORE_A/B/PAYLOAD */
-    push[n++]=(ULONG)((va+0xc000)>>32);push[n++]=(ULONG)(va+0xc000);push[n++]=done;
+    push[n++]=(ULONG)((va+0x3400)>>32);push[n++]=(ULONG)(va+0x3400);push[n++]=done;
     push[n++]=0x200180c0;push[n++]=0x0400000c; /* flushed one-word semaphore release */
     fifo[0]=(pushVa&0xfffffffcULL)|(((pushVa>>32)&0xffULL)<<32)|((ULONG64)n<<42);
     __sync_synchronize();userd[0x8c/4]=1;__sync_synchronize();
@@ -245,7 +246,7 @@ static BOOLEAN NvxGspSubmitCopyUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,UL
 
     scratch=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET;
     userd=(volatile ULONG *)(scratch+0x3200);
-    fence=(volatile ULONG *)(scratch+0xc000);
+    fence=(volatile ULONG *)(scratch+0x3400);
     fifo=(volatile ULONG64 *)scratch;
     va=dev->GspScratchGpuVa;
 
@@ -266,7 +267,7 @@ static BOOLEAN NvxGspSubmitCopyUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,UL
        first 256-byte row. */
     push[n++]=0x200180c0;push[n++]=0x04000386; /* pitch->pitch, multi-line */
     push[n++]=0x20038090; /* SET_SEMAPHORE_A/B/PAYLOAD */
-    push[n++]=(ULONG)((va+0xc000)>>32);push[n++]=(ULONG)(va+0xc000);push[n++]=fenceVal;
+    push[n++]=(ULONG)((va+0x3400)>>32);push[n++]=(ULONG)(va+0x3400);push[n++]=fenceVal;
     push[n++]=0x200180c0;push[n++]=0x0400000c; /* flushed release */
 
     fifo[dev->GspGPPut%1024]=(pushVa&0xfffffffcULL)|(((pushVa>>32)&0xffULL)<<32)|((ULONG64)n<<42);
@@ -387,7 +388,7 @@ static BOOLEAN NvxGspSubmitColorTileStrips(PNVX_DEVICE_EXTENSION dev,
        dev->GspChannelFaulted) return FALSE;
     scratch=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET;
     userd=(volatile ULONG *)(scratch+0x3200);
-    fence=(volatile ULONG *)(scratch+0xc000);
+    fence=(volatile ULONG *)(scratch+0x3400);
     fifo=(volatile ULONG64 *)scratch;
     va=dev->GspScratchGpuVa;
     slot=dev->GspGPPut%16;
@@ -405,7 +406,7 @@ static BOOLEAN NvxGspSubmitColorTileStrips(PNVX_DEVICE_EXTENSION dev,
     fenceVal=dev->GspNextFence++;
     if(!fenceVal) fenceVal=dev->GspNextFence++;
     push[n++]=0x20038090;
-    push[n++]=(ULONG)((va+0xc000)>>32);push[n++]=(ULONG)(va+0xc000);
+    push[n++]=(ULONG)((va+0x3400)>>32);push[n++]=(ULONG)(va+0x3400);
     push[n++]=fenceVal;
     push[n++]=0x200180c0;push[n++]=0x0400000c;
     if(n>64) return FALSE;
@@ -604,7 +605,7 @@ static BOOLEAN NvxGspSubmitFillUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,UL
 
     scratch=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET;
     userd=(volatile ULONG *)(scratch+0x3200);
-    fence=(volatile ULONG *)(scratch+0xc000);
+    fence=(volatile ULONG *)(scratch+0x3400);
     fifo=(volatile ULONG64 *)scratch;
     va=dev->GspScratchGpuVa;
 
@@ -624,7 +625,7 @@ static BOOLEAN NvxGspSubmitFillUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,UL
     push[n++]=bytes/4;
     push[n++]=0x200180c0;push[n++]=0x04000586; /* LAUNCH_DMA with REMAP_ENABLE */
     push[n++]=0x20038090; /* SET_SEMAPHORE_A/B/PAYLOAD */
-    push[n++]=(ULONG)((va+0xc000)>>32);push[n++]=(ULONG)(va+0xc000);push[n++]=fenceVal;
+    push[n++]=(ULONG)((va+0x3400)>>32);push[n++]=(ULONG)(va+0x3400);push[n++]=fenceVal;
     push[n++]=0x200180c0;push[n++]=0x0400000c; /* flushed release */
 
     fifo[dev->GspGPPut%1024]=(pushVa&0xfffffffcULL)|(((pushVa>>32)&0xffULL)<<32)|((ULONG64)n<<42);
@@ -697,8 +698,10 @@ static BOOLEAN NvxGspUploadUnlocked(PVOID HwDeviceExtension,ULONG64 dstVa,const 
         ULONG adapter=gart?1U:(dstVa-dev->GspVramGpuVa)>=0x2000000ULL;
         if(verifiedUploads[adapter]<3) {
             ULONG count=bytes<256?bytes:256, mismatches=0;
-            PUCHAR readback=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET+0xa000;
-            if(!NvxGspSubmitCopyUnlocked(HwDeviceExtension,dev->GspScratchGpuVa+0xa000,dstVa,
+            /* +0xa000 holds the live GR instance block/RAMFC. The shared
+             * submission lock protects the existing +0xe000 readback page. */
+            PUCHAR readback=(PUCHAR)dev->GspDmaVirtual+GSP_SCRATCH_OFFSET+0xe000;
+            if(!NvxGspSubmitCopyUnlocked(HwDeviceExtension,dev->GspScratchGpuVa+0xe000,dstVa,
                                          count,count,count,1))
                 return FALSE;
             for(ULONG i=0;i<count;i++)

@@ -410,12 +410,12 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
             assert(push[11]==1 && push[8]==push[9] && push[9]==push[10]);
             memcpy(dmaPointer(((ULONG64)push[5]<<32)|push[6],push[10]),
                    dmaPointer(((ULONG64)push[3]<<32)|push[4],push[10]),push[10]);
-            *(PULONG)(scratch+0xc000)=push[17];
+            *(PULONG)(scratch+0x3400)=push[17];
         } else {
             assert(push[2]==0x200281c1 && push[4]==0x00030005);
             PULONG dst=(PULONG)dmaPointer(((ULONG64)push[6]<<32)|push[7],push[9]*4);
             for(ULONG i=0;i<push[9];i++) dst[i]=push[3];
-            *(PULONG)(scratch+0xc000)=push[15];
+            *(PULONG)(scratch+0x3400)=push[15];
         }
         *(PULONG)(scratch+0x3288)=dev.GspGPPut;
         return;
@@ -434,7 +434,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
         assert(push[26]==0x20048100&&push[28]==0x21000000&&push[29]==0&&push[30]==0x1000b000);
         assert(push[38]==0x20048100&&push[40]==0x1000f000&&push[41]==0&&push[42]==0x21000000);
         assert(push[50]==0x20048100&&push[52]==0x21000000&&push[53]==0&&push[54]==0x1000e000);
-        assert(push[62]==0x20038090&&push[64]==0x1000c000);
+        assert(push[62]==0x20038090&&push[64]==0x10003400);
         assert(push[66]==0x200180c0&&push[67]==0x0400000c);
         if(scenario!=4) { /* timeout: GPU never writes completion */
             memcpy(scratch+0xf000,gpuVram+0x1000000,256);
@@ -442,7 +442,7 @@ VOID VideoPortWriteRegisterUlong(PULONG p,ULONG value)
             memcpy(scratch+0xb000,gpuVram+0x1000000,256);
             memcpy(gpuVram+0x1000000,scratch+0xf000,256);
             memcpy(scratch+0xe000,gpuVram+0x1000000,256);
-            *(PULONG)(scratch+0xc000)=push[65];
+            *(PULONG)(scratch+0x3400)=push[65];
             userd[0x88/4]=1;
             if(scenario==5) *(PULONG)(scratch+0xb000)^=1; /* stale/corrupt data */
             if(scenario==6) *(PULONG)(scratch+0xb100)^=1; /* guard corruption */
@@ -532,7 +532,7 @@ static void test_reusable_queue(void) {
     dev_q.Bar0Length = sizeof(regs);
 
     PUCHAR scratch = dma + GSP_SCRATCH_OFFSET;
-    volatile ULONG *fence = (volatile ULONG *)(scratch + 0xc000);
+    volatile ULONG *fence = (volatile ULONG *)(scratch + 0x3400);
     fence[0] = 0x100; /* match expected fence */
 
     assert(NvxGspSubmitCopy(&dev_q, 0x21000000, 0x1000a000, 256));
@@ -689,11 +689,18 @@ int main(void)
             assert(dev.GspChannelFaulted==(scenario==4));
             if(scenario==0) {
                 UCHAR pixels[512];
+                PUCHAR live=(PUCHAR)dev.GspDmaVirtual+GSP_SCRATCH_OFFSET;
+                memset(live+0xa000,0x6b,0x1000);
+                memset(live+0xc000,0x97,0x1000);
                 for(ULONG i=0;i<sizeof(pixels);i++) pixels[i]=(UCHAR)(i*17+3);
                 assert(NvxGspUpload(&dev,dev.GspVramGpuVa,pixels,sizeof(pixels)));
                 assert(!memcmp(gpuVram,pixels,sizeof(pixels)));
                 assert(NvxGspUpload(&dev,dev.GspVramGpuVa+0x2000000,pixels,sizeof(pixels)));
                 assert(!memcmp(gpuVram+0x2000000,pixels,sizeof(pixels)));
+                for(ULONG i=0;i<0x1000;i++) {
+                    assert(live[0xa000+i]==0x6b);
+                    assert(live[0xc000+i]==0x97);
+                }
                 assert(!NvxGspUpload(&dev,dev.GspVramGpuVa+0x3de0000,pixels,sizeof(pixels)));
             }
             if(scenario==0) {
