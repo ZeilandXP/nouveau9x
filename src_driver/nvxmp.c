@@ -1496,6 +1496,7 @@ static BOOLEAN Nvx3dCollectBatchAllocations(
         allocation->Height=entry->Height;
         allocation->PitchBytes=entry->PitchBytes;
         allocation->TileMode=entry->TileMode;
+        allocation->MemoryKind=entry->MemoryKind;
         allocation->ClientToken=entry->ClientToken;
     }
     return TRUE;
@@ -1720,6 +1721,7 @@ static BOOLEAN Nvx3dAllocateRmBuffer(PNVX_DEVICE_EXTENSION engine,
     entry->Height=request->Height;
     entry->PitchBytes=request->PitchBytes;
     entry->TileMode=request->TileMode;
+    entry->MemoryKind=request->MemoryKind;
     entry->Alignment=request->Alignment;
     entry->RmMemoryHandle=memoryHandle;
     entry->RmPhysicalOffset=candidate;
@@ -1757,9 +1759,26 @@ static BOOLEAN Nvx3dAllocateRmBuffer(PNVX_DEVICE_EXTENSION engine,
     entry->RmMemoryRegistered=TRUE;
     Nvx3dUnlockBuffers();
 
+    if(request->MemoryKind &&
+       !NvxGspSetVramRangeKind(engine,gpuVa,request->Bytes,
+                                request->MemoryKind,TRUE)) {
+        LogStr("NVX [RM-BO]: failed to install requested Nouveau PTE kind id=");
+        LogHex(id);LogStr(" kind=");LogHex(request->MemoryKind);LogStr("\n");
+        if(NvxGspFreeVramBo(engine,memoryHandle,gpuVa)&&Nvx3dLockBuffers()) {
+            entry=Nvx3dFindBuffer(engine,id);
+            if(entry&&entry->Busy&&entry->RmMemoryHandle==memoryHandle)
+                VideoPortZeroMemory(entry,sizeof(*entry));
+            Nvx3dUnlockBuffers();
+        }
+        request->BufferId=request->GpuVa=0;
+        return FALSE;
+    }
+
     if(!Nvx3dFillBuffer(engine,gpuVa,request->Bytes,request->Usage)) {
         LogStr("NVX [RM-BO]: initial RM-backed BO clear failed id=");
         LogHex(id);LogStr(" va=");LogHex(gpuVa);LogStr("\n");
+        if(request->MemoryKind)
+            (void)NvxGspSetVramRangeKind(engine,gpuVa,request->Bytes,0U,FALSE);
         if(NvxGspFreeVramBo(engine,memoryHandle,gpuVa)&&Nvx3dLockBuffers()) {
             entry=Nvx3dFindBuffer(engine,id);
             if(entry&&entry->Busy&&entry->RmMemoryHandle==memoryHandle)
@@ -1821,6 +1840,7 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
                    entry->Width!=request->Width||entry->Height!=request->Height||
                    entry->PitchBytes!=request->PitchBytes||
                    entry->TileMode!=request->TileMode||
+                   entry->MemoryKind!=request->MemoryKind||
                    entry->Alignment!=request->Alignment) {
                     Nvx3dUnlockBuffers();return FALSE;
                 }
@@ -1922,6 +1942,7 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
     engine->Nvx3dBuffers[slot].Height=request->Height;
     engine->Nvx3dBuffers[slot].PitchBytes=request->PitchBytes;
     engine->Nvx3dBuffers[slot].TileMode=request->TileMode;
+    engine->Nvx3dBuffers[slot].MemoryKind=request->MemoryKind;
     engine->Nvx3dBuffers[slot].Alignment=request->Alignment;
     engine->Nvx3dBuffers[slot].Busy=TRUE;
     request->BufferId=engine->Nvx3dBuffers[slot].Id;
@@ -1929,13 +1950,13 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
     Nvx3dUnlockBuffers();
     if((request->Usage&NVX_3D_USAGE_DEPTH_TARGET) &&
        (request->Bytes<NVX_3D_DEPTH_TARGET_TOTAL_BYTES ||
-        !NvxGspSetDepthRangeKind(engine,
+        !NvxGspSetVramRangeKind(engine,
             request->GpuVa+NVX_3D_DEPTH_TARGET_OFFSET,
             request->Bytes-NVX_3D_DEPTH_TARGET_OFFSET,
             (request->Usage&NVX_3D_USAGE_DEPTH_ZF32)?6U:
             (request->Usage&NVX_3D_USAGE_DEPTH_S8Z24)?3U:5U,TRUE))) {
         if(engine->Nvx3dBuffers[slot].DepthGpuVa)
-            (void)NvxGspSetDepthRangeKind(engine,
+            (void)NvxGspSetVramRangeKind(engine,
                 request->GpuVa+NVX_3D_DEPTH_TARGET_OFFSET,
                 request->Bytes-NVX_3D_DEPTH_TARGET_OFFSET,0U,FALSE);
         if(Nvx3dLockBuffers()) {
@@ -1950,7 +1971,7 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
         LogStr("NVX [3D-ALLOC]: initial clear/fill failed id=");
         LogHex(request->BufferId);LogStr("\n");
         if(request->Usage&NVX_3D_USAGE_DEPTH_TARGET)
-            (void)NvxGspSetDepthRangeKind(engine,
+            (void)NvxGspSetVramRangeKind(engine,
                 request->GpuVa+NVX_3D_DEPTH_TARGET_OFFSET,
                 request->Bytes-NVX_3D_DEPTH_TARGET_OFFSET,0U,FALSE);
         if(Nvx3dLockBuffers()) {
@@ -2072,6 +2093,18 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
         return TRUE;
     }
     if(saved.RmMemoryHandle) {
+        if(saved.MemoryKind &&
+           !NvxGspSetVramRangeKind(engine,saved.GpuVa,saved.Bytes,0U,FALSE)) {
+            if(Nvx3dLockBuffers()) {
+                entry=Nvx3dFindBuffer(engine,id);
+                if(entry&&entry->Busy&&entry->RmMemoryHandle==saved.RmMemoryHandle)
+                    entry->Busy=FALSE;
+                Nvx3dUnlockBuffers();
+            }
+            LogStr("NVX [RM-BO]: retaining allocation after PTE-kind reset failure id=");
+            LogHex(id);LogStr("\n");
+            return FALSE;
+        }
         if(!saved.RmMemoryRegistered||!saved.RmGpuVa||
            !NvxGspFreeVramBo(engine,saved.RmMemoryHandle,saved.RmGpuVa)) {
             if(Nvx3dLockBuffers()) {
@@ -2102,7 +2135,7 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
         return FALSE;
     }
             if((saved.Usage&NVX_3D_USAGE_DEPTH_TARGET) &&
-       !NvxGspSetDepthRangeKind(engine,
+       !NvxGspSetVramRangeKind(engine,
            saved.GpuVa+NVX_3D_DEPTH_TARGET_OFFSET,
            saved.Bytes-NVX_3D_DEPTH_TARGET_OFFSET,0U,FALSE)) {
         if(Nvx3dLockBuffers()) {

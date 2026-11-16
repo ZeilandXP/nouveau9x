@@ -7,7 +7,7 @@
 
 /* Fixed-width ABI shared by XP x64/x86 clients and the miniport.  GPU VAs are
  * always 64-bit; no kernel pointers or RM handles cross this boundary. */
-#define NVX_3D_ABI_VERSION 21U
+#define NVX_3D_ABI_VERSION 22U
 #define NVX_3D_MAX_PUSH_DWORDS 4096U
 #define NVX_3D_MAX_BATCH_RELOCATIONS 256U
 #define NVX_3D_MAX_BATCH_BUFFERS 64U
@@ -345,7 +345,8 @@ typedef struct NVX_3D_ALLOC_BUFFER {
     uint64_t ClientToken;
     uint64_t AllocationToken;
     uint32_t Alignment;
-    uint32_t Reserved;
+    /* Nouveau DRM GEM_NEW PTE memory kind from tile_flags[15:8]. */
+    uint32_t MemoryKind;
 } NVX_3D_ALLOC_BUFFER;
 
 /* Resource-relative address patch for a future validated NVC0 batch. This is
@@ -1278,7 +1279,8 @@ Nvx3dValidateAlloc(const NVX_3D_ALLOC_BUFFER *request)
     if(!request || request->Size!=sizeof(*request) ||
        request->Version!=NVX_3D_ABI_VERSION || request->Usage>127U ||
        ((request->Usage&NVX_3D_USAGE_GART_BUFFER) &&
-        (request->Usage&~NVX_3D_USAGE_GART_BUFFER)) ||
+        ((request->Usage&~NVX_3D_USAGE_GART_BUFFER) ||
+         request->MemoryKind || request->TileMode)) ||
        ((request->Usage&NVX_3D_USAGE_DEPTH_S8Z24) &&
         !(request->Usage&NVX_3D_USAGE_DEPTH_TARGET)) ||
        ((request->Usage&NVX_3D_USAGE_DEPTH_METHOD_S8Z24) &&
@@ -1294,7 +1296,7 @@ Nvx3dValidateAlloc(const NVX_3D_ALLOC_BUFFER *request)
         (request->Alignment<NVX_3D_PAGE_BYTES ||
          request->Alignment>0x00200000U ||
          (request->Alignment&(request->Alignment-1U)))) ||
-       request->Reserved ||
+       request->MemoryKind>0xffU ||
        !request->Bytes || request->Bytes>NVX_3D_MAX_BUFFER_BYTES ||
        (request->Bytes&(NVX_3D_PAGE_BYTES-1U)) ||
        request->BufferId || request->GpuVa)
@@ -1320,7 +1322,7 @@ Nvx3dValidateAlloc(const NVX_3D_ALLOC_BUFFER *request)
             return 0;
         }
     } else if(request->Width || request->Height || request->PitchBytes ||
-              request->TileMode) {
+              request->TileMode>0x70U) {
         return 0;
     }
 

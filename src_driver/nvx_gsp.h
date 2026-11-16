@@ -346,6 +346,7 @@ typedef struct _NVX_3D_USER_BUFFER_ENTRY {
     ULONG Height;
     ULONG PitchBytes;
     ULONG TileMode;
+    ULONG MemoryKind;
     ULONG Alignment;
     ULONG Busy;
     BOOLEAN GpuPinned;
@@ -562,9 +563,9 @@ BOOLEAN NvxGspSubmitCopy2D(PVOID HwDeviceExtension,ULONG64 dstVa,ULONG64 srcVa,
 BOOLEAN NvxGspSubmitCopy2DLocked(PVOID HwDeviceExtension,ULONG64 dstVa,
                                  ULONG64 srcVa,ULONG srcPitch,ULONG dstPitch,
                                  ULONG bytesPerLine,ULONG lineCount);
-BOOLEAN NvxGspSetDepthPageKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
+BOOLEAN NvxGspSetVramPageKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
                                ULONG kind,BOOLEAN map);
-BOOLEAN NvxGspSetDepthRangeKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
+BOOLEAN NvxGspSetVramRangeKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
                                 ULONG bytes,ULONG kind,BOOLEAN map);
 BOOLEAN NvxGspMapGartRange(PVOID HwDeviceExtension,ULONG firstPage,
                            ULONG pageCount,ULONG64 physical,ULONG bytes);

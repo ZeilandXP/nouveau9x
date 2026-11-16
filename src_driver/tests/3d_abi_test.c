@@ -644,6 +644,14 @@ int main(void)
     alloc.Usage=0;alloc.Width=alloc.Height=alloc.PitchBytes=alloc.TileMode=0;
     alloc.Bytes=0x04080000U; /* GA104 NVC0 TLS allocation from nvc0_screen.c. */
     assert(Nvx3dValidateAlloc(&alloc));
+    alloc.Bytes=0x10000U;alloc.TileMode=0x20U;alloc.MemoryKind=0xfeU;
+    assert(Nvx3dValidateAlloc(&alloc));
+    alloc.MemoryKind=0x100U;
+    assert(!Nvx3dValidateAlloc(&alloc));
+    alloc.MemoryKind=0;alloc.TileMode=0;alloc.Usage=NVX_3D_USAGE_GART_BUFFER;
+    alloc.MemoryKind=0xfeU;
+    assert(!Nvx3dValidateAlloc(&alloc));
+    alloc.MemoryKind=0;alloc.Usage=0;
     alloc.Bytes=surface.Bytes;alloc.Usage|=NVX_3D_USAGE_DEPTH_TARGET;
     assert(!Nvx3dValidateAlloc(&alloc));
     alloc.Usage=3;alloc.Bytes=65536;alloc.Width=alloc.Height=0;

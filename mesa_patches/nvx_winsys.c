@@ -247,6 +247,7 @@ NvxWinsysAllocBuffer(NVX_WINSYS_DEVICE *device,
        output.Width != request->Width || output.Height != request->Height ||
        output.PitchBytes != request->PitchBytes ||
        output.TileMode != request->TileMode ||
+       output.MemoryKind != request->MemoryKind ||
        output.Alignment != input.Alignment ||
        output.ClientToken != input.ClientToken ||
        output.AllocationToken != input.AllocationToken)

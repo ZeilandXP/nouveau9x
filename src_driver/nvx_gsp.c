@@ -639,11 +639,11 @@ static BOOLEAN __attribute__((unused)) NvxGspGetClassEngineId(PNVX_DEVICE_EXTENS
     return TRUE;
 }
 
-/* Change the allocated depth page's existing 64KB leaf PTE to its zeta kind,
-   so GR and CE use the same VA and the same mapping for that VRAM page. */
+/* Apply Nouveau's requested memory kind to the existing 64KB VRAM leaf PTEs.
+   Kind zero restores the ordinary linear mapping. */
 static BOOLEAN NvxGspInvalidateVaSpace(PNVX_DEVICE_EXTENSION dev);
 
-BOOLEAN NvxGspSetDepthPageKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
+BOOLEAN NvxGspSetVramPageKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
                                ULONG kind,BOOLEAN map)
 {
     PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
@@ -653,7 +653,7 @@ BOOLEAN NvxGspSetDepthPageKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
     PULONG64 tables;
     if(!dev||!dev->GspDmaVirtual||!dev->GspVaSpaceHandle||
        gpuVa<dev->GspVramGpuVa||(gpuVa&0xffffULL)||
-       (map&&kind!=3U&&kind!=5U&&kind!=6U)||(!map&&kind!=0U))
+       (map&&kind>0xffU)||(!map&&kind!=0U))
         return FALSE;
     offset=gpuVa-dev->GspVramGpuVa;
     if(offset>dev->GspVramMapBytes||0x10000ULL>dev->GspVramMapBytes-offset)
@@ -671,31 +671,59 @@ BOOLEAN NvxGspSetDepthPageKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
     lpt[page]=value;
     __sync_synchronize();
     if(!NvxGspInvalidateVaSpace(dev)) return FALSE;
-    LogStr("NVX [MMU]: depth page ");LogHex(gpuVa);
+    LogStr("NVX [MMU]: VRAM page ");LogHex(gpuVa);
     LogStr(map?" mapped kind ":" restored kind ");LogHex(map?kind:0U);
     LogStr(" PTE=");LogHex(lpt[page]);
     LogStr("\n");
     return TRUE;
 }
 
-BOOLEAN NvxGspSetDepthRangeKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
+BOOLEAN NvxGspSetVramRangeKind(PVOID HwDeviceExtension,ULONG64 gpuVa,
                                 ULONG bytes,ULONG kind,BOOLEAN map)
 {
-    ULONG offset,done=0;
-    if(!bytes||(gpuVa&0xffffULL)||(bytes&0xffffU)) return FALSE;
-    for(offset=0;offset<bytes;offset+=0x10000U) {
-        if(!NvxGspSetDepthPageKind(HwDeviceExtension,gpuVa+offset,kind,map)) {
-            if(map) {
-                while(done) {
-                    done-=0x10000U;
-                    (void)NvxGspSetDepthPageKind(HwDeviceExtension,
-                        gpuVa+done,0U,FALSE);
-                }
-            }
+    PNVX_DEVICE_EXTENSION dev=(PNVX_DEVICE_EXTENSION)HwDeviceExtension;
+    PULONG64 tables;
+    ULONG done;
+    ULONG64 offset;
+    if(!dev||!dev->GspDmaVirtual||!dev->GspVaSpaceHandle||!bytes||
+       gpuVa<dev->GspVramGpuVa||(gpuVa&0xffffULL)||(bytes&0xffffU)||
+       (map&&kind>0xffU)||(!map&&kind!=0U))
+        return FALSE;
+    offset=gpuVa-dev->GspVramGpuVa;
+    if(offset>dev->GspVramMapBytes||bytes>dev->GspVramMapBytes-offset)
+        return FALSE;
+    tables=(PULONG64)((PUCHAR)dev->GspDmaVirtual+GSP_PAGE_TABLES_OFFSET);
+    for(done=0;done<bytes;done+=0x10000U) {
+        ULONG64 pageOffset=offset+done;
+        ULONG slice=(ULONG)(pageOffset/GSP_VRAM_SLICE_BYTES);
+        ULONG page=(ULONG)((pageOffset%GSP_VRAM_SLICE_BYTES)/0x10000ULL);
+        PULONG64 lpt;
+        if(slice>=GSP_VRAM_SLICE_COUNT||page>=32U)
             return FALSE;
-        }
-        done+=0x10000U;
+        lpt=(PULONG64)((PUCHAR)tables+GSP_VRAM_LPT_OFFSET+slice*0x100);
+        lpt[page]=(pageOffset>>4)|1ULL|
+            (map?((1ULL<<7)|((ULONG64)kind<<56)):0ULL);
     }
+    __sync_synchronize();
+    if(!NvxGspInvalidateVaSpace(dev)) {
+        if(map) {
+            for(done=0;done<bytes;done+=0x10000U) {
+                ULONG64 pageOffset=offset+done;
+                ULONG slice=(ULONG)(pageOffset/GSP_VRAM_SLICE_BYTES);
+                ULONG page=(ULONG)((pageOffset%GSP_VRAM_SLICE_BYTES)/0x10000ULL);
+                PULONG64 lpt=(PULONG64)((PUCHAR)tables+GSP_VRAM_LPT_OFFSET+
+                                        slice*0x100);
+                lpt[page]=(pageOffset>>4)|1ULL;
+            }
+            __sync_synchronize();
+            if(!NvxGspInvalidateVaSpace(dev))
+                LogStr("NVX [MMU]: failed to invalidate rollback of VRAM kind range.\n");
+        }
+        return FALSE;
+    }
+    LogStr("NVX [MMU]: VRAM range ");LogHex(gpuVa);
+    LogStr(map?" mapped kind ":" restored kind ");LogHex(map?kind:0U);
+    LogStr(" bytes=");LogHex(bytes);LogStr("\n");
     return TRUE;
 }
 

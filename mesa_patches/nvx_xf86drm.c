@@ -2109,7 +2109,8 @@ nvx_drm_gem_new(struct nvx_drm_device_slot *device,
        (request->align &&
         (request->align & (request->align - 1U))) ||
        (request->info.tile_mode & ~0x70U) ||
-       (request->info.tile_flags & ~NOUVEAU_GEM_TILE_NONCONTIG) ||
+       (request->info.tile_flags &
+        ~(NOUVEAU_GEM_TILE_NONCONTIG | NOUVEAU_GEM_TILE_LAYOUT_MASK)) ||
        (request->info.domain & (NOUVEAU_GEM_DOMAIN_CPU |
                                 NOUVEAU_GEM_DOMAIN_COHERENT)) ||
        (request->info.domain &&
@@ -2129,6 +2130,11 @@ nvx_drm_gem_new(struct nvx_drm_device_slot *device,
       return 0;
    allocated_bytes = Nvx3dAlignU32((uint32_t)requested_bytes,
                                    NVX_3D_PAGE_BYTES);
+   if (request->info.tile_flags & NOUVEAU_GEM_TILE_LAYOUT_MASK) {
+      if (allocated_bytes > UINT32_MAX - 0xffffU)
+         return 0;
+      allocated_bytes = (allocated_bytes + 0xffffU) & ~0xffffU;
+   }
    if (allocated_bytes > device->device.caps.MaxBufferBytes)
       return 0;
 
@@ -2147,18 +2153,23 @@ nvx_drm_gem_new(struct nvx_drm_device_slot *device,
    description.Usage = usage;
    description.Bytes = allocated_bytes;
    description.Alignment = request->align ? request->align : 0x1000U;
+   description.TileMode = request->info.tile_mode;
+   description.MemoryKind =
+      (request->info.tile_flags & NOUVEAU_GEM_TILE_LAYOUT_MASK) >> 8;
    handle = device->next_handle++;
    if (!handle)
       handle = device->next_handle++;
 
    allocated = NvxNouveauBoCreate(&device->device, &description,
                                   device->client_token, &slot->bo);
-   if (!allocated && (request->info.domain & NOUVEAU_GEM_DOMAIN_VRAM) &&
+   if (!allocated && !description.MemoryKind && !description.TileMode &&
+       (request->info.domain & NOUVEAU_GEM_DOMAIN_VRAM) &&
        device->device.caps.GartBytes >= requested_bytes) {
       /* NVC0's per-GPC TLS BO can exceed the small, firmware-confirmed free
        * BAR1 VRAM window while still fitting the mapped GART. Keep placement
        * truthful by retrying in system memory and reporting GART to Mesa. */
       description.Usage = NVX_3D_USAGE_GART_BUFFER;
+      description.Alignment = 0x1000U;
       allocated = NvxNouveauBoCreate(&device->device, &description,
                                      device->client_token, &slot->bo);
       if (allocated)
@@ -2201,7 +2212,9 @@ nvx_drm_gem_new(struct nvx_drm_device_slot *device,
    request->info.size = requested_bytes;
    request->info.offset = slot->bo.allocation.GpuVa;
    request->info.map_handle = handle;
-   request->info.tile_flags |= NOUVEAU_GEM_TILE_NONCONTIG;
+   request->info.tile_mode = slot->bo.allocation.TileMode;
+   request->info.tile_flags =
+      (slot->bo.allocation.MemoryKind << 8) | NOUVEAU_GEM_TILE_NONCONTIG;
    return 1;
 }
 
@@ -2220,7 +2233,9 @@ nvx_drm_gem_info(struct nvx_drm_device_slot *device,
    info->size = slot->bo.allocation.Bytes;
    info->offset = slot->bo.allocation.GpuVa;
    info->map_handle = slot->handle;
-   info->tile_flags |= NOUVEAU_GEM_TILE_NONCONTIG;
+   info->tile_mode = slot->bo.allocation.TileMode;
+   info->tile_flags = (slot->bo.allocation.MemoryKind << 8) |
+                      NOUVEAU_GEM_TILE_NONCONTIG;
    return 1;
 }
 

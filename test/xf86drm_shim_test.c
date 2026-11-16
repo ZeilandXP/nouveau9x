@@ -87,13 +87,17 @@ mock_escape(void *opaque, uint32_t escape, uint32_t input_bytes,
       *result = *request;
       result->BufferId = buffer->id;
       if (request->Usage & NVX_3D_USAGE_GART_BUFFER) {
-         next_gart_va = (next_gart_va + NVX_GART_SLICE_BYTES - 1U) &
-                        ~((uint64_t)NVX_GART_SLICE_BYTES - 1U);
+         uint64_t align = request->Alignment;
+         if (align < NVX_GART_SLICE_BYTES)
+            align = NVX_GART_SLICE_BYTES;
+         next_gart_va = (next_gart_va + align - 1U) & ~(align - 1U);
          result->GpuVa = next_gart_va;
          next_gart_va += ((uint64_t)request->Bytes +
                           NVX_GART_SLICE_BYTES - 1U) &
                          ~((uint64_t)NVX_GART_SLICE_BYTES - 1U);
       } else {
+         uint64_t align = request->Alignment ? request->Alignment : 0x1000U;
+         next_gpu_va = (next_gpu_va + align - 1U) & ~(align - 1U);
          result->GpuVa = next_gpu_va;
          next_gpu_va += request->Bytes;
       }
@@ -232,22 +236,32 @@ main(void)
                                  sizeof(create)) == -1);
       create.align = 0;
       create.info.tile_mode = 0x40U;
-      create.info.domain = NOUVEAU_GEM_DOMAIN_GART;
+      create.info.domain = NOUVEAU_GEM_DOMAIN_VRAM;
       assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GEM_NEW, &create,
                                  sizeof(create)) == 0);
       assert(create.info.handle != 0 && create.info.tile_mode == 0x40U);
       assert(drmCloseBufferHandle(fd, create.info.handle) == 0);
 
       create.info.handle = 0;
+      create.info.domain = NOUVEAU_GEM_DOMAIN_GART;
       create.info.tile_mode = 0x80U;
       assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GEM_NEW, &create,
                                  sizeof(create)) == -1);
       create.info.tile_mode = 0;
       create.info.domain = NOUVEAU_GEM_DOMAIN_VRAM;
-      create.info.tile_flags = 0x100U;
+      create.info.tile_flags = 0x10000U;
       assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GEM_NEW, &create,
                                  sizeof(create)) == -1);
+      create.info.tile_flags = 0xfe00U;
+      create.info.tile_mode = 0x40U;
+      assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GEM_NEW, &create,
+                                 sizeof(create)) == 0);
+      assert(create.info.handle != 0 &&
+             (create.info.tile_flags & NOUVEAU_GEM_TILE_LAYOUT_MASK) == 0xfe00U);
+      assert(drmCloseBufferHandle(fd, create.info.handle) == 0);
+      create.info.handle = 0;
       create.info.tile_flags = 0;
+      create.info.tile_mode = 0;
       create.info.domain = NOUVEAU_GEM_DOMAIN_GART;
       create.align = 0x20000U;
       assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GEM_NEW, &create,
@@ -264,7 +278,7 @@ main(void)
       create.align = 0x20000U;
       assert(drmCommandWriteRead(fd, DRM_NOUVEAU_GEM_NEW, &create,
                                  sizeof(create)) == 0);
-      assert(create.info.handle != 0 && create.info.offset == 0x10000000ULL);
+      assert(create.info.handle != 0 && create.info.offset >= 0x10000000ULL);
       assert((create.info.offset & 0x1ffffU) == 0);
       assert(create.info.domain & NOUVEAU_GEM_DOMAIN_MAPPABLE);
       info.handle = create.info.handle;

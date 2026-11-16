@@ -25,8 +25,6 @@ $repo_root/mesa_patches/0019-nouveau-xp-preserve-pushbuf-limits-on-error.patch
 $repo_root/mesa_patches/0020-nouveau-xp-async-swap.patch
 $repo_root/mesa_patches/0021-nouveau-xp-swap-path-diagnostics.patch
 $repo_root/mesa_patches/0022-nouveau-xp-miptree-allocation-trace.patch
-$repo_root/mesa_patches/0023-nouveau-xp-wgl-gart-targets.patch
-$repo_root/mesa_patches/0024-nouveau-xp-linear-kind-tiled-depth.patch
 $repo_root/mesa_patches/0025-nouveau-xp-force-cpu-prep.patch
 $repo_root/mesa_patches/0026-nouveau-xp-render-target-trace.patch
 $repo_root/mesa_patches/0027-mesa-begin-end-staging-trace.patch

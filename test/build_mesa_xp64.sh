@@ -63,8 +63,6 @@ restore_mesa_sources() {
         "$ROOT/mesa_patches/0027-mesa-begin-end-staging-trace.patch" \
         "$ROOT/mesa_patches/0026-nouveau-xp-render-target-trace.patch" \
         "$ROOT/mesa_patches/0025-nouveau-xp-force-cpu-prep.patch" \
-        "$ROOT/mesa_patches/0024-nouveau-xp-linear-kind-tiled-depth.patch" \
-        "$ROOT/mesa_patches/0023-nouveau-xp-wgl-gart-targets.patch" \
         "$ROOT/mesa_patches/0022-nouveau-xp-miptree-allocation-trace.patch" \
         "$ROOT/mesa_patches/0021-nouveau-xp-swap-path-diagnostics.patch" \
         "$ROOT/mesa_patches/0020-nouveau-xp-async-swap.patch" \
