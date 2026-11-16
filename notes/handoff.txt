@@ -1,6 +1,27 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026 after one .213 full-suite invocation: boot triangle pixels now verify, and the NV170 cube completes 300 frames with native draw fences and no native batch timeout. Later 32-bit ICD loading and gears context creation still fail. This is a partial hardware pass, not a complete Phase 2C pass.
+Updated November 16, 2026: .214 per-client RM graphics-channel candidate implemented and built. Latest measured hardware result remains .213. Concurrent application support is not hardware-proven yet; do not present the new build as a tested multi-application pass.
+
+## .214 candidate: independent client graphics contexts
+
+### Implemented
+
+- Replace the exclusive device-wide lease with one graphics resource set per active client session. Open is idempotent for the same client; another client's channel stays allocated. Removed the old owner token and destructive NvxGspRenewGraphicsChannel path.
+- Each channel owns unique RM handles for TSG, synchronized context-share, explicit kernel graphics context, C56F channel, error notifier, scratch registration, C797 graphics, C7C0 compute, A140 I2M, 902D 2D, and C7B5 copy objects.
+- Allocate 14 MiB of private coherent GART backing through the existing allocator: first 64 KiB supplies queue/USERD/instance/RAMFC/method storage; context backing begins at +2 MiB. VA alignment is 2 MiB. Each client gets its own FIFO put index, semaphore, failure state and completion counters. Device-global context buffers IDs >=8 retain the boot backing; per-context buffers use private backing. Initialize MAIN/PM/PATCH through the existing OpenRM promotion controls.
+- Use OpenRM's host-to-GSP fixed USERD page/index allocation protocol to reserve distinct hardware IDs (session slot + 3; boot CE/GR retain IDs 1/2). New shim nvx_openrm_channel_identity uses the upstream SDK allocation and Ampere doorbell fields, matching kernel_channel.c::_kchannelSendChannelAllocRpc and kfifoGenerateWorkSubmitToken_GA100. The pinned direct GET_WORK_SUBMIT_TOKEN control remains deliberately unused; it is not a substitute for host RM's token service. Runlist identity still comes from the existing validated runlist configuration path.
+- Native batches select their client channel, validate its class-engine IDs, and use its queue/semaphore/doorbell. Channel creation binds the graphics class and verifies a private semaphore release without boot render state, allowing an auxiliary-only first Mesa batch. Completion sequence allocation is inside the submission lock. Draw traces include client token and RM channel identity; counters are per channel.
+- Lifecycle admission rejects new allocations/uploads/downloads/submissions for closing sessions, prevents a second concurrent submit for the same client and rejects new work while its session is closing. Channel teardown refuses an active submission, then follows STOP_CHANNEL, GPU_EVICT_CTX, FREE TSG/notifier/memory. Free client BOs only after acknowledged teardown. A failure retains backing for a later cleanup attempt. GPU-pinned references are tracked separately from CPU Busy state and released after confirmed teardown. RC notifications route reserved hardware IDs to their client fault state; unresolved MMU faults still stop device acceleration.
+- Existing winsys/DRM ABI already returns opaque channel/object handles, so no ABI or Mesa DLL change is needed for dynamic handles. This change is for OpenGL and Direct3D applications using the WineD3D/OpenGL route; it does not implement a native XP Direct3D HAL or fix the existing x86 ICD load error.
+
+### Build/status/limits
+
+- XP x64 miniport build succeeded without warnings: make -C src_driver full-gr-probe NVX_ENABLE_GR_CHANNEL_PROBE=1 NVX_ENABLE_GR_PROMOTE_PROBE=1 NVX_ENABLE_GR_SUBMISSION_PROBE=1. Build log /tmp/nvx-214-build.log. Updated dist_full/nvxmp.sys and candidate INF/test-runner version .214.
+- No host tests or VFIO run performed for .214. Previous .213 results do not validate the new allocation, promotion, token or teardown path.
+- Important limits: clients still use disjoint mappings in one device VASpace, not per-process GPU address-space isolation. CPU submission remains synchronous and serialized by the existing GR submission lock; this is not asynchronous upstream scheduling throughput. The shared GART aperture/BO table and 32 session slots bound capacity; each graphics client now consumes at least 14 MiB before Mesa's BOs. Full host RM memory management is not ported.
+- Normal DLL/process termination still supplies the close request. Forced process kill/crash cleanup is not kernel handle-owned yet. The legacy wait-fence ABI also remains device-scoped; failed live-channel fences are rejected explicitly, but replacing it with client-scoped fence ownership remains follow-up work.
+- Next verification: boot the candidate, verify first-client initialization and pixel readback, then run two x64 OpenGL applications concurrently. Require distinct channel/queue/context addresses and completed native draw fences from both; close one and prove the other continues, then reopen. Separately check WineD3D, x86 dependencies and pixel-format selection. Do not use software renderer FPS or a single RENDERED marker as a multi-client pass.
+- Relevant implementation: src_driver/nvx_gr_clients.c (included by nvx_gsp.c), nvx_gsp.h, nvx_gsp.c, nvxmp.c, nvx_openrm_shim.c/.h, src_driver/Makefile. Existing user-side consumers: mesa_patches/nvx_winsys.c, nvx_xf86drm.c. Known integration failures and .213 evidence remain below.
 
 ## .213 hardware result
 

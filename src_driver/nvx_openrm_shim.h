@@ -29,6 +29,11 @@ void  nvx_reg_write08(void *base, NvU32 offset, NvU8 val);
 #define GPU_REG_RD08(base, offset)        nvx_reg_read08((base), (offset))
 #define GPU_REG_WR08(base, offset, val)   nvx_reg_write08((base), (offset), (val))
 
+/* Host-RM channel identity adapter. IDs are explicitly reserved in the
+ * GSP allocation flags; no dependence on allocation order or a boot channel. */
+NvBool nvx_openrm_channel_identity(NvU32 channelId, NvU32 runlistId,
+                                  NvU32 *allocationFlags, NvU32 *submitToken);
+
 /* Delays and timing */
 void  nvx_stall_us(NvU32 microseconds);
 void  nvx_delay_ms(NvU32 milliseconds);

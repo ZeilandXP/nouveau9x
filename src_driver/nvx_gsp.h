@@ -309,8 +309,27 @@ typedef struct _VIDEO_MODE_DEF {
 
 #define NVX_3D_USER_BUFFER_SLOTS 2048U
 #define NVX_3D_CLIENT_SESSION_SLOTS 32U
+/* RM resources belong to a client, never to the currently submitting app.
+ * GPU VAs are disjoint in the validated shared aperture; contexts and queues
+ * are private. Hardware scheduling remains RM's responsibility. */
+typedef struct NVX_GR_CLIENT_CHANNEL {
+    ULONG64 ClientToken, BackingBufferId, GpuVa;
+    PVOID Virtual;
+    PHYSICAL_ADDRESS Physical;
+    ULONG Tsg, ContextShare, Channel, Notifier, Memory;
+    ULONG Objects[5], ClassIds[5]; /* 3D, compute, I2M, 2D, CE */
+    ULONG SubmitToken, RunlistBase, Put, HardwareChannelId;
+    ULONG DrawTraceCount, CompletedBatches;
+    BOOLEAN Ready, Faulted, Promoted, Scheduled, Submitting;
+    BOOLEAN TsgAllocated, NotifierAllocated, MemoryAllocated;
+    ULONG64 LastFence, CompletedFence;
+} NVX_GR_CLIENT_CHANNEL;
+#define NVX_GR_CLIENT_CONTEXT_OFFSET 0x200000U
+#define NVX_GR_CLIENT_BACKING_BYTES (NVX_GR_CLIENT_CONTEXT_OFFSET + 12U*1024U*1024U)
 typedef struct NVX_3D_CLIENT_SESSION_ENTRY {
     ULONG64 ClientToken;
+    NVX_GR_CLIENT_CHANNEL Graphics;
+    BOOLEAN Closing;
 } NVX_3D_CLIENT_SESSION_ENTRY;
 typedef struct _NVX_3D_USER_BUFFER_ENTRY {
     ULONG64 Id;
@@ -326,6 +345,7 @@ typedef struct _NVX_3D_USER_BUFFER_ENTRY {
     ULONG TileMode;
     ULONG Alignment;
     ULONG Busy;
+    BOOLEAN GpuPinned;
     ULONG GartFirstPage;
     ULONG GartPageCount;
     BOOLEAN GartUnmapPending;
@@ -472,8 +492,6 @@ typedef struct _NVX_DEVICE_EXTENSION {
     BOOLEAN GspGraphicsChannelFaulted;
     BOOLEAN GspGraphicsUserAllocReady;
     BOOLEAN GspGraphicsUserSubmitReady;
-    ULONG64 Nvx3dChannelOwnerToken;
-    ULONG64 Nvx3dChannelBoundToken;
     ULONG64 Nvx3dNextBufferId;
     ULONG64 Nvx3dLastSubmitToken;
     ULONG64 Nvx3dLastSubmitClientToken;
@@ -501,6 +519,7 @@ typedef struct _NVX_DEVICE_EXTENSION {
     ULONG GspGraphicsRunlistBase;
     ULONG GspGraphicsSubmitToken;
     ULONG GspGraphicsGPPut;
+    NVX_GR_LAYOUT GspClientGrLayout;
     ULONG RpcTxSequence,RpcRxSequence;
     NV2080_CTRL_GR_GET_CTX_BUFFER_INFO_PARAMS GrContextInfoParams;
     UCHAR RpcTxRecord[262144];
@@ -560,9 +579,9 @@ BOOLEAN NvxGspSubmitNvc0ColorTargetClear(PVOID HwDeviceExtension,
     ULONG64 fenceValue);
 BOOLEAN NvxGspSubmitNvc0NativeClear(PVOID HwDeviceExtension,
     const uint32_t *nvc0Dwords,ULONG64 fenceValue);
-BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,
+BOOLEAN NvxGspSubmitNvc0Batch(PVOID HwDeviceExtension,ULONG64 clientToken,
     const uint32_t *nvc0Dwords,ULONG dwordCount,
-    PVOID pushVirtual,ULONG64 pushGpuVa,ULONG pushBytes,ULONG64 fenceValue);
+    PVOID pushVirtual,ULONG64 pushGpuVa,ULONG pushBytes,ULONG64 *completedFence);
 BOOLEAN NvxGspSubmitUserColorTargetTriangles(PVOID HwDeviceExtension,
     ULONG64 dstVa,ULONG width,ULONG height,ULONG tileMode,ULONG64 vertexVa,
     ULONG vertexCount,ULONG color,ULONG64 fenceValue,BOOLEAN verifyFullTarget);
@@ -604,7 +623,11 @@ BOOLEAN NvxGspWaitUserFence(PVOID HwDeviceExtension,ULONG64 fenceValue,
                             ULONG timeoutMs);
 BOOLEAN NvxGspUpload(PVOID HwDeviceExtension,ULONG64 dstVa,const void *src,ULONG bytes);
 
-BOOLEAN NvxGspRenewGraphicsChannel(PVOID HwDeviceExtension);
+NVX_GR_CLIENT_CHANNEL *NvxGspFindClientChannel(PVOID, ULONG64);
+BOOLEAN NvxGspOpenClientChannel(PVOID, NVX_3D_CHANNEL_LEASE *, PVOID,
+                               PHYSICAL_ADDRESS, ULONG64, ULONG64);
+BOOLEAN NvxGspCloseClientChannel(PVOID, ULONG64);
+BOOLEAN NvxGspGetClientChannel(PVOID, NVX_3D_CHANNEL_LEASE *);
 VOID NvxGspShutdown(PVOID HwDeviceExtension);
 BOOLEAN NvxGspUnregisterFaultShadow(PNVX_DEVICE_EXTENSION dev);
 int NvxGspSequencerCore(void *context,unsigned int opcode);

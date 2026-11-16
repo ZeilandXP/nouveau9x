@@ -1404,6 +1404,15 @@ static BOOLEAN Nvx3dClientSessionActiveLocked(
     return FALSE;
 }
 
+static BOOLEAN Nvx3dClientAcceptsWorkLocked(PNVX_DEVICE_EXTENSION engine,ULONG64 token)
+{
+    if(!engine||!token) return FALSE;
+    for(ULONG i=0;i<NVX_3D_CLIENT_SESSION_SLOTS;i++)
+        if(engine->Nvx3dClientSessions[i].ClientToken==token)
+            return !engine->Nvx3dClientSessions[i].Closing;
+    return FALSE;
+}
+
 static ULONG64 Nvx3dMaxSurfaceBytes(PNVX_DEVICE_EXTENSION dev)
 {
     /* Only the currently allocated scanout occupies framebuffer memory.
@@ -1797,7 +1806,7 @@ static BOOLEAN Nvx3dAllocateBuffer(PNVX_DEVICE_EXTENSION engine,
         LogStr("NVX [3D-ALLOC]: request rejected before heap scan.\n");
         return FALSE;
     }
-    if(!Nvx3dClientSessionActiveLocked(engine,request->ClientToken)) {
+    if(!Nvx3dClientAcceptsWorkLocked(engine,request->ClientToken)) {
         LogStr("NVX [3D-ALLOC]: inactive client session token=");
         LogHex(request->ClientToken);LogStr("\n");
         Nvx3dUnlockBuffers();
@@ -2121,6 +2130,95 @@ static BOOLEAN Nvx3dFreeBuffer(PNVX_DEVICE_EXTENSION engine,ULONG64 id,
     return TRUE;
 }
 
+/* Channel backing is allocated through the existing checked GART allocator.
+ * Busy keeps it private until RM has acknowledged stop/evict/free. */
+static BOOLEAN Nvx3dCloseGraphicsClientLocked(PNVX_DEVICE_EXTENSION engine,ULONG64 token)
+{
+    NVX_GR_CLIENT_CHANNEL *c=NvxGspFindClientChannel(engine,token);
+    ULONG64 id=c?c->BackingBufferId:0;
+    PNVX_3D_USER_BUFFER_ENTRY entry;
+    if(!Nvx3dLockBuffers()) return FALSE;
+    if(c&&c->Submitting) {Nvx3dUnlockBuffers();return FALSE;}
+    if(c) c->Ready=FALSE;
+    Nvx3dUnlockBuffers();
+    if(!NvxGspCloseClientChannel(engine,token)) return FALSE;
+    /* STOP/EVICT/FREE acknowledged: timed-out GPU references may now be
+       released. Do not clear Busy for unrelated CPU upload operations. */
+    if(!Nvx3dLockBuffers()) return FALSE;
+    for(ULONG i=0;i<NVX_3D_USER_BUFFER_SLOTS;i++) {
+        entry=&engine->Nvx3dBuffers[i];
+        if(entry->ClientToken==token&&entry->GpuPinned) {
+            entry->GpuPinned=FALSE;entry->Busy=FALSE;
+        }
+    }
+    Nvx3dUnlockBuffers();
+    if(id) {
+        if(!Nvx3dLockBuffers()) return FALSE;
+        entry=Nvx3dFindBuffer(engine,id);
+        if(entry) entry->Busy=FALSE;
+        Nvx3dUnlockBuffers();
+        if(!Nvx3dFreeBuffer(engine,id,token)) return FALSE;
+    }
+    if(c) VideoPortZeroMemory(c,sizeof(*c));
+    return TRUE;
+}
+
+static BOOLEAN Nvx3dOpenGraphicsClientLocked(PNVX_DEVICE_EXTENSION engine,
+                                      NVX_3D_CHANNEL_LEASE *lease)
+{
+    NVX_3D_ALLOC_BUFFER allocation={0};
+    PNVX_3D_USER_BUFFER_ENTRY entry;
+    PVOID backing;
+    PHYSICAL_ADDRESS physical;
+    BOOLEAN ok;
+    if(NvxGspGetClientChannel(engine,lease)) return TRUE;
+    if(NvxGspFindClientChannel(engine,lease->ClientToken)) return FALSE;
+    allocation.Size=sizeof(allocation);allocation.Version=NVX_3D_ABI_VERSION;
+    allocation.ClientToken=lease->ClientToken;
+    allocation.AllocationToken=0x47524348414e0000ULL; /* private channel backing */
+    allocation.Usage=NVX_3D_USAGE_GART_BUFFER;
+    allocation.Alignment=NVX_GART_SLICE_BYTES;
+    allocation.Bytes=NVX_GR_CLIENT_BACKING_BYTES;
+    if(!Nvx3dAllocateBuffer(engine,&allocation)) return FALSE;
+    if(!Nvx3dLockBuffers()) return FALSE;
+    entry=Nvx3dFindBuffer(engine,allocation.BufferId);
+    if(!entry||entry->Busy) {Nvx3dUnlockBuffers();return FALSE;}
+    entry->Busy=TRUE;backing=entry->SystemVirtual;physical=entry->SystemPhysical;
+    Nvx3dUnlockBuffers();
+    ok=NvxGspOpenClientChannel(engine,lease,backing,physical,
+                              allocation.GpuVa,allocation.BufferId);
+    if(!ok) {
+        if(NvxGspFindClientChannel(engine,lease->ClientToken))
+            (void)Nvx3dCloseGraphicsClientLocked(engine,lease->ClientToken);
+        else if(Nvx3dLockBuffers()) {
+            entry=Nvx3dFindBuffer(engine,allocation.BufferId);
+            if(entry) entry->Busy=FALSE;
+            Nvx3dUnlockBuffers();
+            (void)Nvx3dFreeBuffer(engine,allocation.BufferId,lease->ClientToken);
+        }
+    }
+    return ok;
+}
+
+static volatile ULONG Nvx3dClientLifecycleBusy;
+static BOOLEAN Nvx3dOpenGraphicsClient(PNVX_DEVICE_EXTENSION engine,
+                                      NVX_3D_CHANNEL_LEASE *lease)
+{
+    BOOLEAN ok;
+    if(__sync_lock_test_and_set(&Nvx3dClientLifecycleBusy,1)) return FALSE;
+    ok=Nvx3dOpenGraphicsClientLocked(engine,lease);
+    __sync_lock_release(&Nvx3dClientLifecycleBusy);
+    return ok;
+}
+static BOOLEAN Nvx3dCloseGraphicsClient(PNVX_DEVICE_EXTENSION engine,ULONG64 token)
+{
+    BOOLEAN ok;
+    if(__sync_lock_test_and_set(&Nvx3dClientLifecycleBusy,1)) return FALSE;
+    ok=Nvx3dCloseGraphicsClientLocked(engine,token);
+    __sync_lock_release(&Nvx3dClientLifecycleBusy);
+    return ok;
+}
+
 BOOLEAN NTAPI HwVidStartIO(
     PVOID HwDeviceExtension,
     PVIDEO_REQUEST_PACKET RequestPacket
@@ -2191,6 +2289,7 @@ BOOLEAN NTAPI HwVidStartIO(
         if(!token) {
             Nvx3dUnlockBuffers();status=ERROR_DEVICE_NOT_READY;break;
         }
+        VideoPortZeroMemory(&engine->Nvx3dClientSessions[i],sizeof(engine->Nvx3dClientSessions[i]));
         engine->Nvx3dClientSessions[i].ClientToken=token;
         Nvx3dUnlockBuffers();
         request.ClientToken=token;
@@ -2221,6 +2320,12 @@ BOOLEAN NTAPI HwVidStartIO(
                 found=TRUE;break;
             }
         if(found) {
+            engine->Nvx3dClientSessions[i].Closing=TRUE;
+            Nvx3dUnlockBuffers();
+            if(!Nvx3dCloseGraphicsClient(engine,request.ClientToken)) {
+                status=ERROR_BUSY;break;
+            }
+            if(!Nvx3dLockBuffers()) {status=ERROR_BUSY;break;}
             for(j=0;j<NVX_3D_USER_BUFFER_SLOTS;j++)
                 if(engine->Nvx3dBuffers[j].Id&&
                    engine->Nvx3dBuffers[j].ClientToken==request.ClientToken) {
@@ -2236,8 +2341,6 @@ BOOLEAN NTAPI HwVidStartIO(
                     busy=TRUE;
         }
         if(found&&!busy) {
-            if(engine->Nvx3dChannelOwnerToken==request.ClientToken)
-                engine->Nvx3dChannelOwnerToken=0;
             engine->Nvx3dClientSessions[i].ClientToken=0;
         }
         Nvx3dUnlockBuffers();
@@ -2266,62 +2369,23 @@ BOOLEAN NTAPI HwVidStartIO(
         if(!Nvx3dClientSessionActiveLocked(engine,request.ClientToken)) {
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
         }
-        if(request.Operation==NVX_3D_CHANNEL_OPEN) {
-            if(!engine->Nvx3dChannelOwnerToken) {
-                BOOLEAN renewed;
-                /* Reserve the lease before dropping the buffer lock for RM. */
-                engine->Nvx3dChannelOwnerToken=request.ClientToken;
-                Nvx3dUnlockBuffers();
-                renewed=NvxGspRenewGraphicsChannel(engine);
-                if(!Nvx3dLockBuffers()) {status=ERROR_BUSY;break;}
-                if(!renewed) {
-                    engine->Nvx3dChannelOwnerToken=0;
-                    Nvx3dUnlockBuffers();status=ERROR_DEVICE_NOT_READY;break;
-                }
-            }
-            if(!engine->GspGraphicsChannelReady||
-               !engine->GspGraphicsCommandVerified||
-               engine->GspGraphicsChannelFaulted||engine->GspMmuFaultQueued||
-               !engine->GspGraphicsChannelHandle||
-               !engine->GspGraphicsObjectHandle||
-               !engine->GspGraphicsComputeObjectHandle) {
-                Nvx3dUnlockBuffers();status=ERROR_BUSY;break;
-            }
-            if(engine->Nvx3dChannelOwnerToken&&
-               engine->Nvx3dChannelOwnerToken!=request.ClientToken) {
-                Nvx3dUnlockBuffers();status=ERROR_BUSY;break;
-            }
-            engine->Nvx3dChannelOwnerToken=request.ClientToken;
-            engine->Nvx3dChannelBoundToken=0;
-            request.ChannelHandle=engine->GspGraphicsChannelHandle;
-            request.GraphicsObjectHandle=engine->GspGraphicsObjectHandle;
-            request.ComputeObjectHandle=engine->GspGraphicsComputeObjectHandle;
-            request.GraphicsClassEngineId=engine->GspGraphicsObjectClassEngineId;
-            request.ComputeClassEngineId=engine->GspGraphicsComputeClassEngineId;
-            request.M2mfClassEngineId=engine->GspGraphicsM2mfClassEngineId;
-            request.CopyClassEngineId=engine->GspGraphicsCopyClassEngineId;
-            request.TwoDClassEngineId=engine->GspGraphics2dClassEngineId;
-            status=NO_ERROR;
-        } else if(request.Operation==NVX_3D_CHANNEL_CLOSE) {
-            if(request.ChannelHandle!=engine->GspGraphicsChannelHandle||
-               request.GraphicsObjectHandle!=engine->GspGraphicsObjectHandle||
-               request.ComputeObjectHandle!=engine->GspGraphicsComputeObjectHandle||
-               request.GraphicsClassEngineId!=engine->GspGraphicsObjectClassEngineId||
-               request.ComputeClassEngineId!=engine->GspGraphicsComputeClassEngineId||
-               request.M2mfClassEngineId!=engine->GspGraphicsM2mfClassEngineId||
-               request.CopyClassEngineId!=engine->GspGraphicsCopyClassEngineId||
-               request.TwoDClassEngineId!=engine->GspGraphics2dClassEngineId) {
-                Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
-            }
-            if(engine->Nvx3dChannelOwnerToken==request.ClientToken) {
-                engine->Nvx3dChannelOwnerToken=0;
-                engine->Nvx3dChannelBoundToken=0;
-            }
-            status=NO_ERROR;
-        } else {
-            Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
+        if(request.Operation==NVX_3D_CHANNEL_OPEN&&
+           !Nvx3dClientAcceptsWorkLocked(engine,request.ClientToken)) {
+            Nvx3dUnlockBuffers();status=ERROR_BUSY;break;
         }
         Nvx3dUnlockBuffers();
+        if(request.Operation==NVX_3D_CHANNEL_OPEN) {
+            status=Nvx3dOpenGraphicsClient(engine,&request)?NO_ERROR:ERROR_DEVICE_NOT_READY;
+        } else {
+            NVX_GR_CLIENT_CHANNEL *c=NvxGspFindClientChannel(engine,request.ClientToken);
+            if(!c) status=NO_ERROR; /* idempotent display escape replay */
+            else if(request.ChannelHandle!=c->Channel||
+                    request.GraphicsObjectHandle!=c->Objects[0]||
+                    request.ComputeObjectHandle!=c->Objects[1])
+                status=ERROR_INVALID_PARAMETER;
+            else status=Nvx3dCloseGraphicsClient(engine,request.ClientToken)?NO_ERROR:ERROR_BUSY;
+        }
+        if(status!=NO_ERROR) break;
         VideoPortMoveMemory(RequestPacket->OutputBuffer,&request,sizeof(request));
         statusBlock->Information=sizeof(request);
         break;
@@ -3012,7 +3076,7 @@ BOOLEAN NTAPI HwVidStartIO(
         }
         entry=Nvx3dFindBuffer(engine,upload.BufferId);
         if(!entry||entry->Busy||entry->ClientToken!=upload.ClientToken||
-           !Nvx3dClientSessionActiveLocked(engine,upload.ClientToken)||
+           !Nvx3dClientAcceptsWorkLocked(engine,upload.ClientToken)||
            !Nvx3dValidateUpload(&upload,inputBytes,entry->Bytes)) {
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
         }
@@ -3057,7 +3121,7 @@ BOOLEAN NTAPI HwVidStartIO(
         VideoPortMoveMemory(&download,RequestPacket->InputBuffer,headerBytes);
         entry=Nvx3dFindBuffer(engine,download.BufferId);
         if(!entry||entry->Busy||entry->ClientToken!=download.ClientToken||
-           !Nvx3dClientSessionActiveLocked(engine,download.ClientToken)||
+           !Nvx3dClientAcceptsWorkLocked(engine,download.ClientToken)||
            !Nvx3dValidateDownload(&download,headerBytes,
                 RequestPacket->OutputBufferLength,entry->Bytes)) {
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
@@ -3160,7 +3224,7 @@ BOOLEAN NTAPI HwVidStartIO(
         entry=Nvx3dFindBuffer(engine,request.BufferId);
         if(!entry||entry->Busy||
            entry->ClientToken!=request.ClientToken||
-           !Nvx3dClientSessionActiveLocked(engine,request.ClientToken)||
+           !Nvx3dClientAcceptsWorkLocked(engine,request.ClientToken)||
            !(entry->Usage&NVX_3D_USAGE_COLOR_TARGET)||
            (entry->Usage&NVX_3D_USAGE_DEPTH_TARGET)||
            !Nvx3dValidateNvc0Clear(&request,sizeof(request),
@@ -3235,7 +3299,7 @@ BOOLEAN NTAPI HwVidStartIO(
         if(!engine||!Nvx3dLockBuffers()) {
             status=ERROR_DEVICE_NOT_READY;goto validate_batch_done;
         }
-        if(!Nvx3dClientSessionActiveLocked(engine,header.ClientToken)) {
+        if(!Nvx3dClientAcceptsWorkLocked(engine,header.ClientToken)) {
             Nvx3dUnlockBuffers();
             status=ERROR_INVALID_PARAMETER;goto validate_batch_done;
         }
@@ -3293,7 +3357,8 @@ validate_batch_done:
         uint64_t addressFailVa=0;
         ULONG ownedCount=0,pinnedCount=0,i;
         ULONG64 fenceValue;
-        BOOLEAN submitted=FALSE;
+        BOOLEAN submitted=FALSE,clientReserved=FALSE;
+        NVX_GR_CLIENT_CHANNEL *channel=NULL;
         status=ERROR_DEVICE_NOT_READY;
         if(!RequestPacket->InputBuffer||
            RequestPacket->InputBufferLength<sizeof(header)||
@@ -3325,13 +3390,14 @@ validate_batch_done:
         if(!engine||!Nvx3dLockBuffers()) {
             status=ERROR_DEVICE_NOT_READY;goto submit_batch_done;
         }
-        if(!Nvx3dClientSessionActiveLocked(engine,header.ClientToken)||
-           engine->Nvx3dChannelOwnerToken!=header.ClientToken||
+        channel=NvxGspFindClientChannel(engine,header.ClientToken);
+        if(!Nvx3dClientAcceptsWorkLocked(engine,header.ClientToken)||
+           !channel||!channel->Ready||channel->Faulted||channel->Submitting||
            !engine->GspGraphicsUserAllocReady||
            !engine->GspGraphicsChannelReady||
            engine->GspGraphicsChannelFaulted||engine->GspMmuFaultQueued) {
             LogStr("NVX [NVC0-BATCH]: reject channel/session owner=");
-            LogHex(engine?engine->Nvx3dChannelOwnerToken:0);
+            LogHex(channel?channel->Channel:0);
             LogStr(" token=");LogHex(header.ClientToken);
             LogStr(" userAlloc=");LogHex(engine?engine->GspGraphicsUserAllocReady:0);
             LogStr(" ready=");LogHex(engine?engine->GspGraphicsChannelReady:0);
@@ -3341,6 +3407,7 @@ validate_batch_done:
             Nvx3dUnlockBuffers();status=ERROR_DEVICE_NOT_READY;
             goto submit_batch_done;
         }
+        channel->Submitting=TRUE;clientReserved=TRUE;
         if(!Nvx3dCollectBatchAllocations(engine,copiedInput,&header,
                 header.ClientToken,ownedAllocations,&ownedCount)) {
             LogStr("NVX [NVC0-BATCH]: reject buffer ownership dwords=");
@@ -3373,17 +3440,17 @@ validate_batch_done:
         {
             ULONG64 refsOffset=sizeof(header);
             uint32_t bindingFailSubchannel=0xffffffffU,bindingFailValue=0;
-            classIds[0]=engine->GspGraphicsObjectClassEngineId;
-            classIds[1]=engine->GspGraphicsComputeClassEngineId;
-            classIds[2]=engine->GspGraphicsM2mfClassEngineId;
-            classIds[3]=engine->GspGraphics2dClassEngineId;
-            classIds[4]=engine->GspGraphicsCopyClassEngineId;
+            classIds[0]=channel->ClassIds[0];
+            classIds[1]=channel->ClassIds[1];
+            classIds[2]=channel->ClassIds[2];
+            classIds[3]=channel->ClassIds[3];
+            classIds[4]=channel->ClassIds[4];
             if(!Nvx3dValidateNvc0ObjectBindingsEx((const uint8_t *)dwords,
                     header.DwordCount,classIds,
-                    (engine->Nvx3dChannelBoundToken!=header.ClientToken)&&(engine->GspGraphicsObjectClassEngineId==0),
+                    FALSE, /* Private queue setup already bound 3D. */
                     &bindingFailSubchannel,&bindingFailValue)) {
                 LogStr("NVX [NVC0-BATCH]: reject class bindings boundToken=");
-                LogHex(engine->Nvx3dChannelBoundToken);LogStr(" client=");
+                LogHex(channel->Channel);LogStr(" client=");
                 LogHex(header.ClientToken);LogStr(" ids=");
                 for(i=0;i<5;i++){LogHex(classIds[i]);LogStr(" ");}
                 LogStr(" subchannel=");LogHex(bindingFailSubchannel);
@@ -3402,7 +3469,7 @@ validate_batch_done:
                 entry=Nvx3dFindBuffer(engine,ref.BufferId);
                 if(!entry||entry->Busy||entry->ClientToken!=header.ClientToken) {
                     status=ERROR_BUSY;
-                    for(ULONG j=0;j<pinnedCount;j++) pinned[j]->Busy=FALSE;
+                    for(ULONG j=0;j<pinnedCount;j++) {pinned[j]->Busy=FALSE;pinned[j]->GpuPinned=FALSE;}
                     pinnedCount=0;
                     break;
                 }
@@ -3411,14 +3478,14 @@ validate_batch_done:
                    entry->Bytes>=header.DwordCount*sizeof(ULONG)+
                                   7U*sizeof(ULONG))
                     pushEntry=entry;
-                entry->Busy=TRUE;pinned[pinnedCount++]=entry;
+                entry->Busy=TRUE;entry->GpuPinned=TRUE;pinned[pinnedCount++]=entry;
             }
             if(status!=ERROR_BUSY&&(!pushEntry||!pinnedCount))
                 status=ERROR_INVALID_PARAMETER;
             if(status!=ERROR_INVALID_PARAMETER&&status!=ERROR_BUSY)
                 status=NO_ERROR;
             if(status!=NO_ERROR) {
-                for(ULONG j=0;j<pinnedCount;j++) pinned[j]->Busy=FALSE;
+                for(ULONG j=0;j<pinnedCount;j++) {pinned[j]->Busy=FALSE;pinned[j]->GpuPinned=FALSE;}
                 pinnedCount=0;
             }
             Nvx3dUnlockBuffers();
@@ -3427,19 +3494,17 @@ validate_batch_done:
             if(!fenceValue||fenceValue>0xffffffffULL) {
                 status=ERROR_DEVICE_NOT_READY;goto release_batch_buffers;
             }
-            submitted=NvxGspSubmitNvc0Batch(engine,dwords,header.DwordCount,
+            submitted=NvxGspSubmitNvc0Batch(engine,header.ClientToken,dwords,header.DwordCount,
                 pushEntry->SystemVirtual,pushEntry->GpuVa,pushEntry->Bytes,
-                fenceValue);
+                &fenceValue);
             if(!submitted) {
                 LogStr("NVX [NVC0-BATCH]: GPU kick/fence failed pushId=");
                 LogHex(pushEntry->Id);LogStr(" va=");LogHex(pushEntry->GpuVa);
                 LogStr(" bytes=");LogHex(pushEntry->Bytes);LogStr("\n");
                 status=ERROR_DEVICE_NOT_READY;
-                if(engine->GspGraphicsChannelFaulted) goto submit_batch_done;
+                if(channel->Faulted) goto submit_batch_done;
                 goto release_batch_buffers;
             }
-            engine->Nvx3dLastFence=fenceValue;
-            engine->Nvx3dChannelBoundToken=header.ClientToken;
             result.Size=sizeof(result);result.Version=NVX_3D_ABI_VERSION;
             result.FenceValue=fenceValue;
             VideoPortMoveMemory(RequestPacket->OutputBuffer,&result,sizeof(result));
@@ -3447,10 +3512,14 @@ validate_batch_done:
         }
 release_batch_buffers:
         if(Nvx3dLockBuffers()) {
-            for(i=0;i<pinnedCount;i++) pinned[i]->Busy=FALSE;
+            for(i=0;i<pinnedCount;i++) {pinned[i]->Busy=FALSE;pinned[i]->GpuPinned=FALSE;}
             Nvx3dUnlockBuffers();
         }
 submit_batch_done:
+        if(clientReserved&&Nvx3dLockBuffers()) {
+            channel->Submitting=FALSE;
+            Nvx3dUnlockBuffers();
+        }
         if(status!=NO_ERROR) {
             LogStr("NVX [NVC0-BATCH]: IOCTL failed status=");
             LogHex(status);LogStr(" bytes=");
@@ -3511,7 +3580,7 @@ submit_batch_done:
             }
             status=ERROR_INVALID_PARAMETER;break;
         }
-        if(!Nvx3dClientSessionActiveLocked(engine,request.ClientToken)) {
+        if(!Nvx3dClientAcceptsWorkLocked(engine,request.ClientToken)) {
             Nvx3dUnlockBuffers();status=ERROR_INVALID_PARAMETER;break;
         }
         if(request.ClientToken&&request.RequestToken==

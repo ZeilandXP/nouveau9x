@@ -86,3 +86,22 @@ NvBool nvx_falcon_wait_idle(const void *bar0, NvU32 falconBase, NvU32 timeoutUs)
     }
     return NV_FALSE;
 }
+
+/* kernel_channel.c::_kchannelSendChannelAllocRpc fixes USERD page/index to
+ * the host-reserved ChID. kernel_fifo_ga100.c::kfifoGenerateWorkSubmitToken
+ * encodes runlist and ChID with these published hardware fields. */
+#include <alloc/alloc_channel.h>
+#include <swref/published/ampere/ga100/dev_ctrl.h>
+NvBool nvx_openrm_channel_identity(NvU32 channelId,NvU32 runlistId,
+                                  NvU32 *allocationFlags,NvU32 *submitToken)
+{
+    if(!allocationFlags||!submitToken||channelId>=4096U||runlistId>=128U)
+        return NV_FALSE;
+    *allocationFlags=0x20U|
+        DRF_DEF(OS04,_FLAGS,_CHANNEL_USERD_INDEX_PAGE_FIXED,_TRUE)|
+        DRF_NUM(OS04,_FLAGS,_CHANNEL_USERD_INDEX_PAGE_VALUE,channelId/8U)|
+        DRF_NUM(OS04,_FLAGS,_CHANNEL_USERD_INDEX_VALUE,channelId%8U);
+    *submitToken=DRF_NUM(_CTRL,_VF_DOORBELL,_VECTOR,channelId)|
+                 DRF_NUM(_CTRL,_VF_DOORBELL,_RUNLIST_ID,runlistId);
+    return NV_TRUE;
+}
