@@ -1,242 +1,133 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 16, 2026: `.225` fixes two confirmed differences in client channel cleanup: explicitly FREE the channel before its TSG, and serialize FREE with `hObjectParent=NV01_NULL_OBJECT` as upstream `GspRmFree` does. An acknowledged channel FREE clears only that handle; any failure retains remaining resources and the ChID for a cleanup retry. Host checks and GR-enabled build pass. VFIO `.225` renders 300 hardware OpenGL frames at 60.2 FPS (90 GPU batches), then native clear faults ChID 2 and ChID 10 with RC 31. The run fails before normal hardware-client teardown is observed, so reuse improvement is unproven. Log: `test_logs/v3.0.0.225-20261116-125509.log`; runner `/tmp/nvx-225-full-test.log`.
+Updated November 16, 2026.
 
-## .225 explicit channel retirement
+### `.230` / `.231` upstream ChID lifecycle and hardware tests
 
-- `NvxGrDestroyClient` previously STOPped/EVICTed the channel, then FREEd the parent TSG and relied on recursive channel destruction. OpenRM's `kchannelDestruct_IMPL` explicitly sends channel FREE before releasing the group and hardware ID; its comment requires removing the GSP method-buffer BAR2 mapping before freeing backing.
-- `.225` sends channel FREE and waits for the RPC success before group, notifier, scratch registration and ChID release. The channel handle is cleared after acknowledgement so a later TSG FREE failure can retry without double-freeing the channel. Failures retain ownership and backing.
-- All FREE messages within this client destructor now use a zero parent, matching `GspRmFree` in `open-gpu-kernel-modules/src/nvidia/kernel/vgpu/nv/rpc.c` around line 1989. Other BO allocation/free paths are outside this change.
-- Added `channel FREE acknowledged` logging with handle and hardware ChID for the hardware test. This confirms the explicit request completed before the ID can be recycled; it is not itself proof that the reuse failure is fixed.
-- Validation: host check suite and GR-enabled build passed. Full VFIO run booted on first attempt; hardware OpenGL rendered 300 frames in 4.9805 seconds (60.2 FPS) with 90 GPU batches. The native-clear test then triggered RC 31 on boot ChID 2 and private ChID 10; the full run failed. No `channel FREE acknowledged` was observed before that fault, so this run does not establish whether explicit channel retirement fixes reuse. Later gears used GDI Generic at 735 FPS, then another context failed with error 183; that gears FPS is software and must not be reported as acceleration.
-- Relevant files: `src_driver/nvx_gr_clients.c`, upstream `gpu/fifo/kernel_channel.c` around lines 1056-1115, and upstream `kernel/vgpu/nv/rpc.c` around lines 1985-1993.
+- `NvxGspSubmitNvc0NativeClear` now requires a ready channel owned by the
+  request's `ClientToken`; cross-client channel borrowing remains removed.
+  `test_gpu_accel.c` opens a channel for each native-clear owner, preserves
+  explicit tokens in its ExtEscape wrapper, and frees the 64x16 target under
+  the same owner.
+- `nvx_openrm_containers.c` now mirrors OpenRM's `pGlobalChIDHeap` and
+  `pFifoDataHeap`: each ChID is allocated at the same fixed offset in both
+  upstream EHeaps; channel association is set on allocation, cleared on free,
+  and both entries are released. Previously only the ChID heap was modeled.
+- `.230` command: `NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1
+  NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1
+  ./test/test_full_driver.sh`. Host checks, XP package/import audit, and VFIO
+  boot passed. A second WGL session opened ChID 18 and the explicitly owned
+  native clear passed fence and readback (`[NVX_NVC0_NATIVE_CLEAR_RESULT] PASS`).
+  Gallium logged `Native Nouveau Gallium pipe_screen created`, initialized an
+  NVC0 context, and advanced 300 frames at about 60 FPS with `gpu_batches=90`
+  per 30-frame interval. Later boot-channel submission faulted and marked the
+  client channels faulted; a separate WGL audit failed ICD context load (error
+  126), and the runner rejected native submissions. The native clear itself
+  passed, but the old probe freed its target with the default test token; `.231`
+  corrected that cleanup ownership. Log:
+  `test_logs/v3.0.0.230-20261116-163045.log`.
+- `.231` corrected the native-clear test's free-token mismatch and reran the
+  full suite. Host checks and XP package/import audit passed; VFIO boot and
+  graceful shutdown passed. The first gears session used ChID 10 successfully,
+  but the next client reused ChID 10 and again timed out in private-queue
+  verification (USERD GET/PUT=1, GP_FETCH=1, PB_FETCH/GET/PUT=0). Mesa reported
+  `channel_result=2`, `screens=0`, `gpu_batches=0`; `[OPENGL_RESULT] SOFTWARE`,
+  WGL context error 183, and `[TEST_COMPLETE] Status: FAIL`. The paired
+  FIFO-data heap is an upstream fidelity fix, but it did not eliminate the
+  intermittent same-ChID queue recreation stall. Log:
+  `test_logs/v3.0.0.231-20261116-163640.log`; `vm_serial.log` points to it.
+- In `.231`, the owned native-clear result failed because the second client's
+  channel never opened. A later legacy boot-channel clear timed out and raised
+  FIFO MMU RC 31 on ChID 2; channel-open failures and screen fallback preceded
+  this. Firmware assertion count remained one. Preserve the strict owner check.
+- **Next:** compare upstream lifecycle beyond the paired heaps: ChID retirement
+  and references, FIFO instance/RAMFC allocation and initialization, TSG/channel
+  destruction order, and fresh queue GART mappings. Capture create/free RPC and
+  BAR0/runlist/CHRAM state before and after ChID 10 reuse. Separately trace why
+  the legacy boot channel faults with FIFO MMU RC 31; it invalidates client
+  channels after native screen creation. Frame counters alone do not prove
+  correct GPU rendering; retain GPU-batch, fence, and framebuffer-readback
+  checks.
 
-## .224 analysis and correction
+### `.228` channel-recreation fix and hardware result
 
-- The first private client queue verifies, but subsequent queue creations stall before pushbuffer fetch. The later boot GR native clear reports `FAULT_UNBOUND_INST_BLOCK`. A valid leaf PTE does not prove that the channel instance block is intact.
-- Runtime `NvxGspUploadUnlocked` performed up to three diagnostic readbacks per adapter into `scratch+0xa000`. This page was reassigned to GR RAMIN in `.217`; the CE therefore replaced live GR metadata with application bytes. Moved diagnostic readback to the lock-protected `+0xe000` page.
-- CE release-semaphore writes also used `scratch+0xc000`, overlapping the GR method buffer at `+0xc000..+0xdfff`. Moved all CE completion CPU/GPU addresses to `+0x3400`, outside CE USERD `+0x3200..+0x33ff` and GR USERD `+0xb400..+0xb5ff`.
-- Corrected the `.223` diagnosis: `gvaspaceExternalRootDirCommit_IMPL` explicitly accepts `SHARED_MANAGEMENT OR externally owned` (gpu_vaspace.c around line 3143), despite the narrower public documentation. Restore externally-owned-only flags; adding shared management was not a required fix.
-- Regression validation: with the old upload readback destination restored only in the host test's temporary build copy, the new assertion fails (`live[0xa000+i]==0x6b`). With the fix, the entire host suite and GR probe build pass. Negative-control output: `/tmp/nvx-224-regression-negative.log`; build output `/tmp/nvx-224-build.log`.
-- Hardware `.224`: booted on attempt 2. Initial private ChID 10 verifies; first gears reports NV170 and 136 frames / 6 seconds. Later ChID 10 queue verification still times out with GET=PUT=1 and no pushbuffer fetch. The later cube test selects software (zero GPU batches), and native clear still reports RC 31, fault VA `0x10009000`, type 4. Therefore the overlap fix is validated by host regression, but is insufficient for full hardware success. Keep the repeated-channel lifecycle failure open.
-- Relevant files: `src_driver/nvx_ce.c`, `src_driver/nvx_gsp.c` (GR instance/method layout), `src_driver/nvx_disp_rpc.c` (VASpace flags), `src_driver/tests/gsp_mock_test.c` (preserve metadata across upload regression), and `open-gpu-kernel-modules/src/nvidia/src/kernel/mem_mgr/gpu_vaspace.c`.
+- Restored `GPU_EVICT_CTX` after STOP_CHANNEL and before channel FREE in `NvxGrDestroyClient`. The local `.227` edits had replaced this RPC with `c->Promoted=FALSE`, which only changed host bookkeeping. The restored sequence matches `open-gpu-kernel-modules/src/nvidia/src/kernel/rmapi/nv_gpu_ops.c:nvGpuOpsStopChannel`. Failed eviction retains the promoted state and backing for retry. This also restores behavior present in `.225`; that earlier version still had failures, so eviction alone is not a proven cure for recreation.
+- Fixed `Nvx3dOpenGraphicsClientLocked` ignoring a failed `Nvx3dCloseGraphicsClientLocked`: now it returns failure before allocating or replaying backing for a still-owned channel. This prevents continuing reopen after unconfirmed retirement.
+- The `.228` VFIO run tested these changes after the earlier `.227` worktree edits. Host checks, driver/display builds and XP import audit passed. Attempt 1 had no serial activity; attempt 2 booted. Log: `test_logs/v3.0.0.228-20261116-154541.log`; runner output is in the active test command session.
+- 64-bit gears selected ICD pixel format 63, reported NV170, rendered 131 frames in 6 seconds (21.8 FPS), and closed with an acknowledged channel FREE. The user-observed missing gears parts remain a rendering correctness issue; the log has no image capture.
+- The next client again reused ChID 10 and failed private queue verification twice. At timeout USERD GET/PUT were 1, PBDMA GP_FETCH was 1, PB_FETCH/GET/PUT were 0, and the backing's RAMFC_CHID diagnostic was 0. Cleanup then logged channel FREE acknowledgement. The native clear and OpenGL audit failed; OpenGL fell back to GDI Generic, and 32-bit gears still failed context creation with error 183. Suite result is `[TEST_COMPLETE] Status: FAIL`.
+- This run proves restoring EVICT and refusing reopen after failed teardown did not fix the recreated-channel queue stall. Focus the next code trace on how RM initializes/rebinds the reused ChID's instance/RAMFC and how the first pushbuffer VA is consumed after channel FREE/reallocation. Do not treat GP_FETCH=1 as proof that PBDMA fetched or executed the pushbuffer.
+- Version identity mismatch: the package INF and archive are `.228`, but the miniport serial banner still says `3.0.0.5` (`src_driver/nvxmp.c`). The binary was built and packaged by the `.228` run, but update the embedded banner on the next revision so the guest log identifies it consistently.
 
-## .220 hardware test: Nouveau draws; following native clear causes FIFO MMU fault
+## 1. Latest Run & Artifacts
+### Upstream comparison after `.228`
 
-- Ran the full VFIO command with auto retry and all GR probes. Host checks and driver build passed. Hardware log: `test_logs/v3.0.0.220-20261116-114422.log`; runner output `/tmp/nvx-220-full-test.log`; suite exits 1.
-- One Nouveau OpenGL run completed 300 frames in 4.9337 seconds (60.8 FPS), classified `[OPENGL_RESULT] RENDERED`. This establishes that this application path submitted work through the GPU in this run.
-- The bounded 28-dword native NVC0 clear then timed out at fences `0x70f` and `0x710`. PBDMA fetched the pushbuffer through `0x1000f35c`, but no semaphore was observed. On the following RM drain, channel RC notifications reported type `0x1f` for ChID 2 and ChID 10. Upstream `nverror.h` maps 31 to `ROBUST_CHANNEL_FIFO_ERROR_MMU_ERR_FLT`; the driver had not yet logged the actual fault address. The test then marked the graphics channel faulted, so later OpenGL probes failed or selected GDI Generic. Firmware assertion count stayed at baseline 1.
-- `.220` temporarily retained retired IDs until teardown to see whether immediate reuse mattered. It did not log a retired ID and only one private queue was verified, so the experiment did not exercise ChID reuse. This behavior diverges from normal OpenRM teardown and is removed in the next candidate.
-- `.221` restores normal OpenRM EHeap ChID release. On native-clear timeout it asks RM for `GET_MMU_FAULT_INFO`, and when RC type `0x1f` drains it snapshots the registered shadow-fault queue. `GET_MMU_FAULT_INFO` returns address `0x10009000`, type `0x4`; upstream `dev_fault.h` and `kgmmuGetFaultTypeString_GP100` identify type 4 as `FAULT_UNBOUND_INST_BLOCK`. The registered shadow queue has no pending packet. The reported address is the custom XP GPFIFO mapping, not the clear target BO. OpenRM reports/queries the failure; XP code owns the scratch backing, page tables, and GPFIFO submission.
-- `.222` logs live PDE/PTE, expected physical address, scratch RM object, and VA-space handle. The PDE/PTE matched the initialized mapping at fault time. The faulting VA belongs to the GR test channel GPFIFO (`scratch+0x9000`), not the boot/CE GPFIFO.
-- `.222` host `make -C src_driver check`, `make -C src_driver full`, and `git diff --check` passed. VFIO test exited 1 because the full run's later hardware OpenGL classification was software after the RC fault; the log still records one 300-frame Nouveau run at 61.5 FPS. Boot triangle GR readback and semaphore passed. Native clear failed and WGL gears returned context error 183.
-- `.223` changed the VASpace flags from `IS_EXTERNALLY_OWNED` alone to `SHARED_MANAGEMENT | IS_EXTERNALLY_OWNED`, based on `ctrl0080dma.h`'s documented precondition for `SET_PAGE_DIRECTORY`. Host checks/build passed. The VFIO result did not change: the same ChID 2 fault at `0x10009000`, type 4, with valid PTE; later OpenGL remained software and the Nouveau screen could not allocate a FIFO channel. Firmware assertion count remained at baseline 1.
-- OpenRM feasibility note: the checked-in path has no usable `ALLOC_VIRTMEM` operation for this GSP configuration (`rpc_vgpu.h` supplies a no-op), while `AMPERE_CHANNEL_GPFIFO_A` expects the caller-provided GPFIFO VA. `.223` applies both documented VASpace flags, but that did not fix the fault. Continue by checking which RM/RISC-V channel allocation result corresponds to `channel_result=2` in `NVX_NOUVEAU_RUNTIME_TRACE`, and compare the failed Nouveau client channel's TSG/context-share/instance parameters with the working kernel GR channel before changing packet submission.
-- Relevant files: `src_driver/nvx_gsp.c` (RC event drain, fault queue, native clear), `src_driver/nvxmp.c` (FB BO mapping and clear ABI), `src_driver/nvx_3d_abi.h` (packet validation), `test/test_gpu_accel.c` (clear stream), `open-gpu-kernel-modules/src/common/sdk/nvidia/inc/nverror.h`, and this log.
+- Highest-priority custom boundary: `nvx_gr_clients.c:NvxGspOpenClientChannel` builds physical context initialization and VA-only PROMOTE requests itself. Upstream `kernel_graphics_context.c` tracks mappings/refcounts with VA_LIST and detaches/unmaps through `shrkgrctxDetach_IMPL` (around 3530), subject to `kgrctxShouldCleanup`. XP has no equivalent host mapping ownership graph. Shared global backing plus private context backing needs explicit ownership accounting; a generic EVICT is not equivalent to all host destructor work. This is a confirmed architectural difference, not a proven explanation of the stalled queue.
+- `nvx_openrm_shim.c:nvx_openrm_channel_memory` hardcodes descriptor sizes, offsets and cache attributes. Upstream `_kchannelSendChannelAllocRpc` (kernel_channel.c around 2421) obtains these from real FIFO instance/USERD/TSG memory descriptors. The physical-descriptor RPC itself is upstream behavior for GSP clients; supplying descriptors is not inherently a divergence. Reuse allocator/HAL sizing and descriptor construction where feasible, with XP supplying the actual coherent allocations.
+- `nvx_openrm_policy.c:nvx_openrm_kick` calls the imported TU102 doorbell implementation, then adds a custom MMIO write to runlistBase+0x90. That extra write is not part of the compared upstream helper. A previous doorbell-only candidate failed boot, so removing it blindly is not a validated fix; audit the physical BAR0 versus upstream virtual-register mapping contract first.
+- `nvx_openrm_containers.c` now mirrors the ChID and FIFO-data heaps, but is not the complete CHID_MGR. Upstream also clears FIFO data, drops isolation IDs and supports retained ID references. The paired heaps did not stop the `.231` ChID 10 recreation stall; refcount/retainer and full channel teardown behavior remain open comparisons.
+- Native clear now requires its own ready client channel, and its test explicitly opens the owner channel. The legacy `NvxGspSubmitUserOperation` path still targets boot GR and is associated with the later ChID 2 FIFO MMU fault; changing native-clear ownership does not eliminate all boot submissions. Route diagnostics through an owned client lease and keep one submission implementation.
+- Practical reuse: continue importing self-contained OpenRM policy/HAL functions and containers with real XP OS adapters. Full `kchannelConstruct`/destruct, GR mapping and memory ownership routines require the connected NVOC/resource-server/memdesc/VASpace objects; the current small policy views cannot safely stand in for that object graph. Do not claim that a wrapper around existing custom code ports those subsystems.
 
-The `.219` channel-recreation findings below remain a separate unresolved issue; `.220` did not test its quarantine hypothesis.
-
-## .219 hardware test: first client passes; recreated channel stalls before pushbuffer fetch
-
-- Ran `NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1 ./test/test_full_driver.sh`. Host checks and package build passed. VFIO suite exited 1; serial log is `test_logs/v3.0.0.219-20261116-113518.log`, runner output `/tmp/nvx-219-full-test.log`.
-- Boot GR triangle/fence path remains successful. One Nouveau client channel is verified at ChID 10 and VA `0x11A00000`; the log shows gears completes 128 frames in 6 seconds (21.3 FPS). Later client admission fails, cube reports `[OPENGL_RESULT] SOFTWARE`, and a subsequent `wglgears` context fails with error 183. Thus the run contains a working GPU path, but the full suite and repeat-app lifecycle do not pass.
-- `.219` explicitly zeroed USERD GP_GET/GP_PUT before scheduling and captured PBDMA/CHRAM state before teardown. This did not fix recreation. The next channel reused ChID 10, USERD queue VA `0x11A00000`, and GPFIFO VA `0x11A09000`, although its backing physical address changed. At timeout USERD GET/PUT and PBDMA GP_GET/GP_PUT/GP_FETCH were all 1; PBDMA PB_FETCH/PB_GET/PB_PUT were 0, INTR0/1 were 0, and CHRAM moved from `0x2` to `0x46` across the two observations. The GPFIFO entry was fetched, but command execution was not established.
-- Firmware assertion counter remains at baseline 1. The queue reset did not change the hardware state. Do not claim that the GPU executed the queue entry or that channel-ID reuse is already proven causal.
-- Relevant code: `src_driver/nvx_gr_clients.c` (fresh channel lifecycle and timeout snapshot), `src_driver/nvx_gsp.c` (PBDMA diagnostics and GART mapping/invalidation), `src_driver/nvx_openrm_containers.c` (upstream EHeap ChID allocation/release), `src_driver/nvxmp.c` (client backing allocate/free), `notes/handoff.txt`, and the serial log above.
-- Next: run one controlled candidate using a fresh ChID after the first channel is closed. If that changes the outcome, implement a bounded, correct retirement/reuse protocol rather than leaking ChIDs. If it still fails, compare known-good and failed PBDMA/CHRAM state and investigate GPFIFO-to-pushbuffer address translation. Keep the existing `.217` boot and Nouveau proof separate from the failing repeat-client path.
-
-The `.217` hardware test below is historical; it is not the latest result.
-
-## .217 hardware test: boot GR recovered; private queue and WGL gears still fail
-
-- Ran `NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1 ./test/test_full_driver.sh`. The first QEMU attempt had no serial activity; the configured retry booted successfully. Serial log: `test_logs/v3.0.0.217-20261116-111651.log`; runner output: `/tmp/nvx-217-full-test.log`. Host checks, package build and XP import/subsystem audit passed. Full suite ends `[TEST_COMPLETE] Status: FAIL`.
-- `.217` changes: set OpenRM channel descriptor `cacheAttrib` back to `NV_MEMORY_CACHED` (0), matching the established XP common-buffer path and `.215`; preserve the upstream `kfifoUpdateUsermodeDoorbell_TU102` host BAR0 doorbell and restore the known XP runlist `base+0x90` channel notification after it. Apply the kick to boot, native and client channels. Add descriptor/kick-order shim tests. Version is `3.0.0.217`.
-- Boot probe PASS: log reports `rang channel doorbell ... chid=0x2`, boot I2M/rasterizer/C797 submission, 512 green and 512 background pixels verified, and `GR pipeline triangle draw, pixel readback and semaphore completed successfully`. Firmware assertion count remains at baseline 1.
-- OpenGL activity PASS for one application path: renderer reports `NV170`; four NVC0 draw submissions complete with matching observed fences. The 300-frame run reaches `OPENGL_RESULT RENDERED`, 60.1 FPS (progress intervals ~58.8–61.1 FPS). This is evidence of GPU work in that path, not a full WGL-gears pass or correct rendered-image inspection.
-- Later independent/private C797 clear path FAILS: two native clear submissions time out with fences `0x70f`/`0x710`, observed value 0. Subsequent diagnostic semaphore expected `0x711`, still zero; private GR GP_GET=1, GP_PUT=2, and all clear pipeline checkpoints remain zero. The queue has consumed its first boot entry but does not complete the later entry. This is a queue progression/submission issue; it is not the boot GR initialization regression from `.216`.
-- WGL context creation remains separate failures: the bounded availability test reports `wglCreateContext` error 126 / ICD load failure, while the later `wglgears` process reports error 183 and its direct ICD fallback also fails. The same log has successful 300-frame `NV170` OpenGL runs, so investigate the separate process/context lifecycle, pixel-format handling and session/channel cleanup. Do not conflate either context error with the earlier successful rendering run.
-- 2D tests pass. Bounded 3D test fails after native clear timeout; later capability query marks channel faulted. D3D9 returns NULL. Firmware assertion baseline remains 1. Overall hardware suite is not passing.
-- Relevant code: `src_driver/nvx_openrm_policy.c` (kick policy), `src_driver/nvx_openrm_shim.c`/`.h` and `src_driver/tests/openrm_shim_test.c` (descriptor/kick checks), `src_driver/nvx_gsp.c` and `src_driver/nvx_gr_clients.c` (boot and per-client submission callers), `test/test_full_driver.sh` (version), `dist_full/nvx.inf` (package version). Hardware evidence is in the log above.
-- Next: trace why the private channel's next GPFIFO entry remains at GP_GET=1 after boot while GP_PUT advances; compare its ring entry, USERD and doorbell/runlist state with the working Nouveau client channel. Separately fix the WGL gears error 183/session lifecycle. Add `[TEST_COMPLETE]` to the auto-retry runner's recognized completion markers; current runner misses this marker and lets the guest continue into the separate gears check until the desktop timeout.
-
-## .216 hardware test: boot GR fetch regression; software rendering
-
-- Invoked the requested full command with NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1. One guest boot reached the desktop. Serial log: test_logs/v3.0.0.216-20261116-110852.log; suite output: /tmp/nvx-216-full-test.log. Suite exits 1: hardware OpenGL was not proven. Runner stops after the 180-second desktop limit and harvests guest logs; its session-completed message alone does not prove graceful XP shutdown.
-- Full host tests PASS, including upstream channel-ID ownership/isolation/reuse, GSP mock and shim tests. Miniport/display build and offline XP import/subsystem audits PASS. These do not establish hardware channel execution; mocks do not exercise the changed physical doorbell path.
-- REGRESSION versus .215: boot GR no longer fetches its first GPFIFO entry. GP_GET stays 0, GP_PUT=1, fence=0 through the command-fetch timeout. RAMFC diagnostic at the new instance-backed +a000 address reports USERD low/high=0, GP base=10009000, GP high=90000, channel field=0. CHRAM slot 2 reports 2. No boot triangle/semaphore success or private client queue verification is observed.
-- OpenGL renderer is softpipe (Mesa software), OPENGL_RESULT SOFTWARE. Cube counts 300 frames / 4.9097s (61.1 FPS); this is NOT hardware acceleration. Capability queries report channel_ready=0 and command_verified=0, so the new private-client lifecycle is not exercised by the applications.
-- 2D_RESULT PASS, GPU solid-fill markers and GPU copy-completion verification remain present. Firmware assertion count stays at the logged boot baseline 1; no runtime increase is observed, but failed GR admission prevents exercising the later private-channel fault case.
-- Live serial stops after creating IDirect3D9 and identifying its adapter; no D3D9_RESULT or all-benchmarks completion marker. Harvested wglgears.log reports wglCreateContext failure 183 and failed direct-ICD fallback; no gears hardware frames are proven. That appended file has no independent timestamp/run identity, so avoid treating it as a fresh live gears execution without further correlation.
-- MAIN nonzero bytes=0 after physical initialization also occurred in .215, which passed the boot triangle. Do NOT treat that value alone as a newly introduced failure or confirmed cause.
-- Next diagnosis must isolate the changes introduced together in .216: host-only doorbell replacing the former direct internal runlist pending write, RAMFC/instance aliasing and uncached/error-notifier descriptors. The checked-out host-RM code accesses the VF doorbell through GPU_VREG_WR32; our adapter writes the physical BAR0 address directly. Whether that mapping is equivalent on this direct-GSP setup is NOT proven. Upstream token/GR policy reuse does not establish equivalent register mapping or backing allocation.
-- Also retain this layout issue for correction: boot probe uses scratch+e000 as a CE readback destination, now explicitly exposed as error-notifier backing. They should have disjoint ownership. This is not a demonstrated explanation for the initial no-fetch failure, which occurs before readback.
-- No automatic second candidate or VFIO retest in this request. Preserve the failing evidence before further changes.
-
-## .216 candidate: upstream channel/context policies and descriptor corrections
-
-### Actual upstream code reused
-
-- Existing unmodified EHeap + btree libraries still own channel-ID allocation and USERD-page isolation; existing shared MsgQ source remains upstream.
-- tools/import_openrm_policy.py selects COMPLETE function definitions verbatim from the pinned submodule: kfifoGenerateWorkSubmitToken_GA100, kfifoUpdateUsermodeDoorbell_TU102 (the host implementation used by the Ampere path), kgrctxGetGlobalContextBufferInternalId_IMPL and kgrctxPrepareInitializeCtxBuffer_IMPL. Original MIT notices and #line locations are preserved. No algorithm rewriting or submodule edits. The generated .c and internal-flags header are ignored build outputs, recreated by Make and the host runners.
-- nvx_openrm_policy_view.h supplies small PRIVATE object views for those functions' read dependencies: single physical GPU, GFID 0, no MIG/VF/protected contexts. These are NOT real NVOC objects or ABI-compatible substitutes; no live XP object is cast to an upstream object. Unsupported virtualization paths return an error. The views do not implement upstream resource allocation, lifetime, locking or address-space management.
-- nvx_openrm_policy.c adapts already allocated resources to those views. Context physical initialization selection now comes from upstream, including buffer-specific initialization exclusions. The adapter supplies UNCACHED system-memory attributes because VideoPort common buffers use CacheEnabled=FALSE. Internal privilege/notifier bitfields and notifier enum come from the original generated upstream header rather than hardcoded 0x19.
-
-### Resource corrections in the same candidate (not hardware-proven fixes)
-
-- Both boot and private GR descriptors now place the 512-byte RAMFC at offset ZERO of the 4 KiB instance allocation, matching kchannelAllocMem_GM107's memdescCreateSubMem. The previous code explicitly separated their backing; that comment/behavior contradicted upstream. RAMFC diagnostic reads now use scratch+a000.
-- Channel memory descriptors use NV_MEMORY_UNCACHED=1; previous zero actually meant NV_MEMORY_CACHED. Supply the previously omitted errorNotifierMem physical descriptor at scratch+e000. The helper validates alignment, overflow and unwanted overlaps; RAMFC/instance aliasing is intentional. Still uses XP-owned system-memory instance backing: upstream GSP-client allocation normally prefers/requires framebuffer placement. This placement divergence remains.
-- Global buffer classification uses upstream enum conversion, replacing the b->id>=8 rule. All recognized global buffers retain the boot physical/VA backing; MAIN/PM/PATCH remain per client. VA promotion orchestration is still custom and does not implement upstream VA_LIST reference tracking.
-- Boot GR probes/clear, private verification and native Mesa batch submission/retry use the upstream host doorbell routine. Remove the extra direct runlist+0x90 pending write from GR submission. Preserve DMA publication barriers. The additional PCIe flush seen in the common upstream submission helper is a no-op HAL on this GPU family; the explicit implementation located during audit is Hopper-specific. Do not claim lack of that Hopper flush is a proven GA104 bug. CE/display paths remain separate.
-- Client bind/schedule/runlist query use SDK structs and named class constants; unused queried engine slots use ENGINE_TYPE_NULL. Query reply still comes from validated custom RPC framing. New private-queue timeout logs show hardware ID, USERD GET/PUT, FIFO entry and RAMFC channel ID, then drain firmware notifications before teardown.
-- Fix EHeap bootstrap ownership contract: enable isolation before allocation and pass the device owner + comparator even for the fixed page-zero reservation. The .215 adapter passed NULL comparator and violated an upstream assertion. The corrected allocator passed the added owner/isolation/reuse GSP mock coverage BEFORE the subsequent .216 policy changes, log /tmp/nvx-216-upstream-host-test.log. Do not treat that earlier pass as testing the final .216 tree.
-- Internal ClientToken type is now NvU64 so the real allocator pointer type also matches Linux host builds (no ABI size change).
-
-### Build, limits and next verification
-
-- XP x64 full-GR miniport builds without warnings: make -C src_driver full-gr-probe NVX_ENABLE_GR_CHANNEL_PROBE=1 NVX_ENABLE_GR_PROMOTE_PROBE=1 NVX_ENABLE_GR_SUBMISSION_PROBE=1. Log /tmp/nvx-216-openrm-build.log. Linked symbols confirm all four selected upstream functions. Package miniport copied to dist_full/nvxmp.sys; INF and test runner version 3.0.0.216. Mesa DLL unchanged. Subsequent full-suite host/build/import checks pass and VFIO exposes the regression above. The x86 miniport build remains untested; the application/ICD x86 package was audited by the suite.
-- Remaining custom stack: explicit GSP channel/TSG/context-share construction and stop/evict/free sequence, registered-memory descriptor allocation, GPU page tables/shared VASpace, context layout/VA binding, synchronous submission/fence accounting, fault routing, process cleanup and RPC transport. Compiling selected policy functions is NOT transferring those subsystems. Instancing/views cannot provide the missing NVOC resource ownership graph.
-- Full host-RM port requires building the generated NVOC object/runtime/resource hierarchy with its memory-descriptor/VASpace managers, resource ownership/refcounts, OS locking/process/interrupt adapters and RPC services together. Replace channel creation AND teardown with that hierarchy only once the backing memory/ownership services exist. Do not label moving custom code behind a shim as actual upstream reuse.
-- Next test, one final candidate: NVX_AUTO_RETRY=1 NVX_GR_CHANNEL_PROBE=1 NVX_GR_PROMOTE_PROBE=1 NVX_GR_SUBMISSION_PROBE=1 ./test/test_full_driver.sh. Require .216 identification, boot triangle pixels, native NV170 cube and completed draw fences, then subsequent application channels and gears. Reject GDI Generic/software or assertion increases even if frames are counted. Existing sequential suite does not prove two applications running concurrently; add that verification only when requested. Check return to the boot diagnostic channel, close/reopen, and eventual close-one/continue-other.
-- Relevant files: src_driver/nvx_openrm_policy.c, nvx_openrm_policy_view.h, tools/import_openrm_policy.py, nvx_openrm_shim.c/.h, nvx_openrm_containers.c, openrm_xp/utils/nvassert.h, nvx_gr_clients.c, nvx_gsp.c/.h, Makefile, tests/run_gsp_host_test.sh and run_openrm_shim_test.sh. Preexisting local dist_full/mesa-build-manifest.txt modification preserved separately.
-
-## .215 hardware result: software fallback; later queue verification fails
-
-- Log test_logs/v3.0.0.215-20261116-105135.log, suite output /tmp/nvx-215-full-test.log. Host suite/build/import phase ran before the later added allocator-contract test. Full output explicitly rejects hardware OpenGL as unproven/software.
-- First private queue verifies token 77f5e7fe00000002, channel 61000105, hardware token 0xa, USERD page 1 / slot 2, queue VA 11a00000, context VA 11c00000. This proves only a class bind + semaphore probe, NOT GPU-rendered frames.
-- Subsequent tokens 659e652000000006 and 2e9b4e4f0000000a fail stage=private queue fence verification. Cube reports renderer GDI Generic and OPENGL_RESULT SOFTWARE; its frame count/FPS is software. Firmware assertion count rises from boot baseline 1 to 3 and runtime device graphics quarantine is logged.
-- Boot/native triangle and 2D/copy controls pass, but they do not establish application hardware acceleration. .214's native NV170 cube result remains historical; it does not describe this run.
-- Known adapter defect found by separate new host coverage: fixed EHeap reservation under owner isolation omitted the required comparator. Corrected in .216. Whether it explains any hardware symptom is unproven; descriptor/context/doorbell changes also require the final test.
-
-## .215 implementation history: upstream-owned channel-ID allocation and USERD isolation
-
-- Upstream finding: kernel_fifo.c::_kfifoChidMgrAllocChidHeaps explicitly enables EHeap owner isolation with granularity RM_PAGE_SIZE / USERD size and states that different clients must not share a USERD page. .214 put boot ID 2 and private ID 6 in hardware page zero despite separate backing. This confirms a violated upstream allocation contract; whether it fully explains the observed switch-back failure still needs hardware verification.
-- Now compile unmodified submodule sources src/nvidia/src/libraries/containers/eheap/eheap_old.c and containers/btree/btree.c into nvxmp.sys. No generated copies or submodule changes. The linked binary contains constructObjEHeap, eheapAlloc, btreeInsert and nvx_openrm_chid_* symbols. This is actual allocator reuse, not an XP implementation of EHeap's selection or page-isolation algorithm.
-- New src_driver/nvx_openrm_containers.c supplies OS memory/debug adapters and the existing EHeap API setup used by OpenRM's channel manager. Enables owner isolation at eight 512-byte USERDs per 4 KiB page. Reserves device page zero; EHeap chooses each application's hardware ID with FORCE_INTERNAL_INDEX derived from its USERD offset. The user's registered +0xb400 address means within-page slot 2. Distinct session tokens supply XP ownership identity. No ID = session slot + constant formula remains.
-- ID ownership stays allocated until STOP/EVICT/FREE acknowledges RM channel destruction. Failed teardown retains the reservation and backing. Release the allocator heap only after confirmed RM-client teardown and engine halt during shutdown. New RC routing ignores identities that are no longer allocated.
-- XP shims live in src_driver/openrm_xp/. Memory uses XP kernel ExAllocatePoolWithTag/ExFreePool; debug assertions use VideoPortDebugPrint. A hosted memory/debug adapter is available for the existing GSP mock build; its runner now compiles the same upstream libraries. The initial build-only state was subsequently tested; see .215 results above.
-- Also separates native client submission admission from boot-only Ready/Faulted flags. Client readiness/failure is checked on the client object; MMU faults remain device-wide. New firmware assertions after verified GR now explicitly quarantine device graphics, so .214's 1 -> 5 assertion increase would still stop all clients rather than be hidden by fault separation. A root-cause fix must prevent that increase.
-- Scope: only channel-ID allocation/page-isolation internals are replaced with upstream container code in this revision. GSP RPC framing, descriptor construction, context promotion, stop/evict orchestration, shared VASpace/page tables, and submission serialization remain XP adapter/custom code. The full KernelFifo/CHID_MGR object graph and GR resource manager are not linked. Token bit encoding still uses published upstream hardware fields.
-- Build: make -C src_driver full-gr-probe NVX_ENABLE_GR_CHANNEL_PROBE=1 NVX_ENABLE_GR_PROMOTE_PROBE=1 NVX_ENABLE_GR_SUBMISSION_PROBE=1 succeeds without warnings, log /tmp/nvx-215-upstream-build.log. Package miniport and INF/test-runner identify .215; Mesa ABI/DLL unchanged. The later .215 suite ran host/build/import checks; see its hardware failure above.
-- Relevant new files: src_driver/nvx_openrm_containers.c, openrm_xp/os/os.h, openrm_xp/nvport/nvport.h, openrm_xp/utils/nvassert.h and nvprintf.h, openrm_xp/shrdebug.h. Integration: Makefile, nvx_gr_clients.c, nvx_gsp.h, nvx_gsp_boot.c, nvx_openrm_shim.h, tests/run_gsp_host_test.sh. Fault separation: nvx_gsp.c and nvxmp.c.
-- This initial candidate was subsequently tested as .215 and failed hardware OpenGL. Current candidate, remaining divergences and next validation are recorded in the .216 section above.
-
-## .214 hardware result: private rendering passes, return to boot GR fails
-
-- Log: test_logs/v3.0.0.214-20261116-103335.log; suite output /tmp/nvx-214-full-test.log. Exactly one successful VFIO guest test session; two earlier suite attempts stopped in host compilation before launching a VM.
-- Host integration fixes made before hardware run: nvx_gsp.h now includes its ABI dependency explicitly; mock runners copy the new included nvx_gr_clients.c and required ABI headers; guard the GR queue-verification helper when GR support is disabled. Full host suite, driver build and XP import audit subsequently pass. Added/passed OpenRM shim checks for IDs 3/8/34, runlist token encoding and invalid inputs (/tmp/nvx-214-shim-test.log).
-- Boot triangle PASS: 512 green + 512 white pixels.
-- Private client queue verified: token 0x29c4296600000004, RM channel 0x61000305, hardware submit token 6, queue VA 0x11a00000, context VA 0x11c00000. This directly exercises the new per-client backing and reserved channel-identity shim.
-- Cube: renderer NV170, 300 frames / 4.9883s (60.1 FPS). Native draw logs on that private channel confirm expected/observed fences 5/6/11/12. This proves one private client channel executes real GR work; it does not establish concurrent application support or correct visible cube geometry.
-- FAILURE: following validated native-clear diagnostics still submit through the retained boot channel (GPFIFO at 0x10009000). Fences 0x70f/0x710 stay zero; later GR timeout expects 0x711 with USERD GP_GET=1, GP_PUT=4. Boot queue does not resume as expected after private-client rendering. Assertions increase from boot baseline 1 to 5 when firmware notifications are drained during later RM work.
-- Boot failure sets device GspGraphicsChannelFaulted. Current private-submit admission still checks that boot flag, so subsequent batches for the otherwise distinct client are rejected (owner/channel 0x61000305). Fault containment is therefore still coupled to the diagnostic channel at this admission check.
-- Only one GR-CLIENT private-queue verification appears. Later gears remains software (GDI Generic) or fails context creation; the x86 ICD load error remains. No two application clients were observed rendering concurrently, and no concurrent-process probe was added to this sequential suite.
-- Full script exits 1 via the native submission failure gate despite OPENGL_RESULT RENDERED. VM runner ends session and harvests traces; this does not independently establish graceful XP shutdown. No second hardware revision/run attempted.
-- Next fix: trace boot/private channel switching and scheduler/USERD ownership. In particular, reserved IDs 2 and 6 occupy the same hardware USERD page while using separate backing; audit whether the host-RM/GSP page-allocation contract requires shared page backing or separate reserved USERD pages. This is a hypothesis, not a confirmed cause. Also audit shared context-buffer scope and boot scheduling state, and separate boot-channel fault admission from client-local failure where hardware state permits. Then verify two application channels, close-one/continue-other, and reopen.
-- Relevant files: src_driver/nvx_gr_clients.c, nvx_openrm_shim.c, nvx_gsp.c (legacy native clear, native batch admission/fences), nvxmp.c, and src_driver/tests/run_*_host_test.sh. Preserve this measured failure before further edits.
-
-## .214 candidate: independent client graphics contexts
-
-### Implemented
-
-- Replace the exclusive device-wide lease with one graphics resource set per active client session. Open is idempotent for the same client; another client's channel stays allocated. Removed the old owner token and destructive NvxGspRenewGraphicsChannel path.
-- Each channel owns unique RM handles for TSG, synchronized context-share, explicit kernel graphics context, C56F channel, error notifier, scratch registration, C797 graphics, C7C0 compute, A140 I2M, 902D 2D, and C7B5 copy objects.
-- Allocate 14 MiB of private coherent GART backing through the existing allocator: first 64 KiB supplies queue/USERD/instance/RAMFC/method storage; context backing begins at +2 MiB. VA alignment is 2 MiB. Each client gets its own FIFO put index, semaphore, failure state and completion counters. Device-global context buffers IDs >=8 retain the boot backing; per-context buffers use private backing. Initialize MAIN/PM/PATCH through the existing OpenRM promotion controls.
-- Use OpenRM's host-to-GSP fixed USERD page/index allocation protocol to reserve distinct hardware IDs (session slot + 3; boot CE/GR retain IDs 1/2). New shim nvx_openrm_channel_identity uses the upstream SDK allocation and Ampere doorbell fields, matching kernel_channel.c::_kchannelSendChannelAllocRpc and kfifoGenerateWorkSubmitToken_GA100. The pinned direct GET_WORK_SUBMIT_TOKEN control remains deliberately unused; it is not a substitute for host RM's token service. Runlist identity still comes from the existing validated runlist configuration path.
-- Native batches select their client channel, validate its class-engine IDs, and use its queue/semaphore/doorbell. Channel creation binds the graphics class and verifies a private semaphore release without boot render state, allowing an auxiliary-only first Mesa batch. Completion sequence allocation is inside the submission lock. Draw traces include client token and RM channel identity; counters are per channel.
-- Lifecycle admission rejects new allocations/uploads/downloads/submissions for closing sessions, prevents a second concurrent submit for the same client and rejects new work while its session is closing. Channel teardown refuses an active submission, then follows STOP_CHANNEL, GPU_EVICT_CTX, FREE TSG/notifier/memory. Free client BOs only after acknowledged teardown. A failure retains backing for a later cleanup attempt. GPU-pinned references are tracked separately from CPU Busy state and released after confirmed teardown. RC notifications route reserved hardware IDs to their client fault state; unresolved MMU faults still stop device acceleration.
-- Existing winsys/DRM ABI already returns opaque channel/object handles, so no ABI or Mesa DLL change is needed for dynamic handles. This change is for OpenGL and Direct3D applications using the WineD3D/OpenGL route; it does not implement a native XP Direct3D HAL or fix the existing x86 ICD load error.
-
-### Build/status/limits
-
-- XP x64 miniport build succeeded without warnings: make -C src_driver full-gr-probe NVX_ENABLE_GR_CHANNEL_PROBE=1 NVX_ENABLE_GR_PROMOTE_PROBE=1 NVX_ENABLE_GR_SUBMISSION_PROBE=1. Build log /tmp/nvx-214-build.log. Updated dist_full/nvxmp.sys and candidate INF/test-runner version .214.
-- Initial candidate was build-only; the subsequent .214 host/VFIO results and regression are recorded above. Previous .213 results do not validate the new allocation, promotion, token or teardown path.
-- Important limits: clients still use disjoint mappings in one device VASpace, not per-process GPU address-space isolation. CPU submission remains synchronous and serialized by the existing GR submission lock; this is not asynchronous upstream scheduling throughput. The shared GART aperture/BO table and 32 session slots bound capacity; each graphics client now consumes at least 14 MiB before Mesa's BOs. Full host RM memory management is not ported.
-- Normal DLL/process termination still supplies the close request. Forced process kill/crash cleanup is not kernel handle-owned yet. The legacy wait-fence ABI also remains device-scoped; failed live-channel fences are rejected explicitly, but replacing it with client-scoped fence ownership remains follow-up work.
-- Next verification: boot the candidate, verify first-client initialization and pixel readback, then run two x64 OpenGL applications concurrently. Require distinct channel/queue/context addresses and completed native draw fences from both; close one and prove the other continues, then reopen. Separately check WineD3D, x86 dependencies and pixel-format selection. Do not use software renderer FPS or a single RENDERED marker as a multi-client pass.
-- Relevant implementation: src_driver/nvx_gr_clients.c (included by nvx_gsp.c), nvx_gsp.h, nvx_gsp.c, nvxmp.c, nvx_openrm_shim.c/.h, src_driver/Makefile. Existing user-side consumers: mesa_patches/nvx_winsys.c, nvx_xf86drm.c. Known integration failures and .213 evidence remain below.
-
-## .213 hardware result
-
-- Log: test_logs/v3.0.0.213-20261115-211531.log; command output /tmp/nvx-213-full-test.log. Host checks, driver build and XP import audit passed. Reused existing Mesa ICD, SHA256 f81fddfa2a063b68bcb4e2dc1e1155bb5a8f5584672b8ffa358868d109e3da0a (matches package manifest); no Mesa source changes in .213.
-- One full-suite invocation; auto-retry needed after an initial boot attempt produced no serial output. The successful boot exercised candidate .213, including the new application-channel I2M/fence diagnostic.
-- Boot rendering probe: green triangle pixel readback verified, 512 green + 512 white pixels. Previous readback mismatch did not recur after moving target away from channel metadata.
-- Renewed application channel: 16 I2M dwords verified; completion semaphore passed. Native cube renderer NV170; 300 frames in 4.9744 seconds (60.3 FPS), bridge reports 901 batches. Four logged native draws confirm expected/observed fences 5, 6, 11, 12. No NVC0-BATCH timeout/kick failure/session rejection or COPY-Q timeout found in this run.
-- Independent native clear tests passed 1024-pixel fence/readback and four-color matrix checks. OpenGL center sample is blue (0,0,255), GL error zero. These support GPU execution and readback, but do not independently establish correct visible cube geometry or window presentation.
-- 2D fills and GPU copy completion passed. Firmware assertion count remains boot baseline 1; do not claim zero assertions.
-- REMAINING: later 32-bit test cannot load ICD (wglCreateContext and direct LoadLibrary error 126); later gears uses GDI Generic software and another gears attempt fails context creation error 183. Cross-process ownership/context lifetime still requires investigation; this run only logs one fresh-channel verification. Do not count software gears FPS as hardware performance.
-- D3D remains incomplete: later Direct3DCreate9 returns NULL; D3D9_RESULT UNAVAILABLE; a TEST_COMPLETE marker is FAIL. Full script nevertheless exits 0 because it accepts any OPENGL_RESULT RENDERED and no native batch timeout. The .213 native-failure gate catches the former timeout false positive, but does not enforce all application/architecture results. Result aggregation remains an issue.
-- Isolated FB P2MF was configured, but no standalone PASS marker found; do not infer it passed from build/enable messages. The I2M and native rendering checks above are directly observed.
-- Session ended under the bounded runner; script reports Windows XP session completed. Do not infer graceful guest shutdown from that message alone. No second revision or successful guest run performed. Next: fix result aggregation, diagnose 32-bit ICD dependencies and trace subsequent application lease acquisition/cleanup, then confirm cube output visually.
-
-## .213 candidate: isolate GR probe memory and application context state
-
-- Found a concrete scratch-layout overlap: the probe's 64x16 A8R8G8B8 target is 4096 bytes at +0xb600..+0xc5ff, overlapping RM's channel method buffer at +0xc000. Relocated target/I2M destination to the unused +0x6000 page and clear the full page before probing. Shader/texture resources at +0x7000/+0x8000 and channel metadata remain separate. Other users of +0x6000 are later synchronous operations, not part of channel creation.
-- Renewed channels now submit SET_OBJECT, bounded I2M data, WAIT_FOR_IDLE and the completion semaphore without the boot rasterizer/shader/target setup. Mesa initializes its own render state. The boot channel still executes the full rendering probe. This reduces a divergence from upstream's initialized application contexts; it does not establish the root cause of the cube failure.
-- Full-suite result gate now rejects logged native batch completion/kick/session failures even if the application emits OPENGL_RESULT RENDERED. This fixes the known .212 false-positive criterion, but still does not independently verify visible pixels.
-- Build: make -C src_driver full-gr-probe NVX_ENABLE_GR_CHANNEL_PROBE=1 NVX_ENABLE_GR_PROMOTE_PROBE=1 NVX_ENABLE_GR_SUBMISSION_PROBE=1 succeeded; output /tmp/nvx-213-build.log. No host tests or hardware run performed for this revision. Package miniport and INF updated to candidate .213; Mesa ICD unchanged.
-- Next hardware check: compare boot triangle readback, renewed-channel I2M verification, first native cube completion fence, and visible output. Keep timeout quarantine; do not interpret PB_GET at end as GPU execution completion. If still failing, examine engine completion/context state after renewal; overlap correction alone is not proof of a complete fix.
-- Relevant files: src_driver/nvx_gsp.c (NvxGspCreateGraphicsProbe), test/test_full_driver.sh (candidate version and native failure gate), dist_full/nvxmp.sys, dist_full/nvx.inf. Last measured failure remains test_logs/v3.0.0.212-20261115-204447.log.
-
-## .212 candidate: close ICD kernel sessions on normal process exit
-
-- Mesa WGL skips full screen destruction during DLL_PROCESS_DETACH on process termination. Linux would close the DRM fd automatically; the NVX pseudo-fd previously had no equivalent, so the ICD client token could retain the exclusive lease after gears exited.
-- New external patch 0032 calls a narrow termination hook. It closes registered DRM kernel client sessions directly without acquiring BO-pool/device-table locks or destroying Mesa screens. Uses a fresh display DC because the original window DC may already have been released.
-- Kernel close diagnostics now include the exact token, allowing the ICD session to be distinguished from the benchmark helper session.
-- Host checks, fresh Mesa/driver build and XP import audit pass. One VFIO run: test_logs/v3.0.0.212-20261115-204447.log.
-- Cleanup confirmed: helper token 0x29c4296600000004 closes, then actual ICD token 0x659e652000000006 closes on process termination. The following cube gets a freshly verified channel (third successful renewal). Original lease leak resolved for normal ExitProcess.
-- Gears: GL_RENDERER NV170, 139 frames / 6 seconds (23.167 FPS). This remains application progress, not independent pixel verification.
-- Remaining blocker: cube initial batch fence 0x1901 never releases; GP_GET=GP_PUT=2, PB_GET=PB_PUT=0x11c1146c (end of submitted buffer, dword 0x51b). Channel quarantines; subsequent submissions reject. This differs from the earlier inline P2MF stop. No new firmware assertions beyond boot baseline 1.
-- TEST FALSE POSITIVE: cube nevertheless emits OPENGL_RESULT RENDERED and reports 300 frames / 5.306s (56.5 FPS). Do not accept this as hardware success while fences fail. Strengthen result criteria using native submission failures/completed fences and render-target pixel verification; bridge gpu_batches counters alone do not track the native Nouveau path reliably.
-- Fresh-channel boot probes log triangle readback mismatches although semaphore/channel verification succeeds. Keep that limitation visible when interpreting GR-LIFETIME messages.
-- Final run: script exits 0 because its renderer/frame criterion accepts RENDERED; this is a false positive in the presence of the logged fence timeout. FB P2MF probe and boot GR controls remain separate checks. Busy buffers from the quarantined cube remain retained, as expected for unconfirmed GPU completion. VM session was ended by the bounded runner; graceful guest shutdown is not established.
-- Scope: normal ExitProcess/DLL termination. Forced process kill and loader-lock interaction still need a kernel-managed cleanup design. Paused after exactly one .212 hardware run.
-
-## .211 tested: upstream stop/evict and global context lifetime
-
-- Adds OpenRM nvGpuOpsStopChannel sequence (STOP_CHANNEL then GPU_EVICT_CTX) before freeing a TSG and reusing backing. Any unacknowledged step stops renewal.
-- Preserve device-global context buffers across leases; clear/reinitialize only MAIN/PM/PATCH on channel recreation. Skip repeated initialization of global FECS/privilege buffers, following kgrctxPrepareInitializeCtxBuffer initialization scopes.
-- Clear GspGrPromotionAccepted before creation so a failed physical initialize cannot inherit an old success and execute uninitialized context memory. Do not retry renewal of a faulted channel.
-- Host checks, fresh Mesa/driver build and XP import audit pass. One VFIO run: test_logs/v3.0.0.211-20261115-203011.log.
-- Channel recreation now succeeds twice: physical initialization of the three per-channel buffers and VA binding both return NV_OK; GR-LIFETIME reports fresh channel verified for lease. .210 recreation regression resolved in this run.
-- Gears identifies GL_RENDERER NV170 and completes 129 frames in 6 seconds (21.5 FPS); no NVC0 batch timeout or kernel-rejected pushbuf logged in the completed run. This is application frame progress, not independent pixel/visual verification of gears.
-- Later cube falls back to GDI Generic (OPENGL_RESULT SOFTWARE) after Nouveau FIFO channel creation fails. Existing exclusive owner/ICD session cleanup is the next suspect; do not restore silent takeover of a live channel. Trace CHANNEL_CLOSE and CLIENT_CLOSE for the ICD token, not only the benchmark helper token. Process exit cleanup is not established.
-- Firmware assertion count remains at boot baseline 1 in the completed serial log. Full suite is still not a hardware OpenGL pass because later applications cannot acquire a channel.
-- Final result: FB P2MF PASS; two fresh-channel verification passes; suite exits 1 because later cube is SOFTWARE. VM completed the 180-second session and shut down. Paused after exactly one .211 hardware run.
-- .211 is current; the .210 and .209 sections below are historical.
-
-## .210 FAILED candidate: class identity, GART publication, fresh channel lease
-
-- Advertise actual RM A140 P2MF class (Mesa NVF0_P2MF), replacing the A040 alias in winsys and DRM SCLASS/object creation. Log RM class/engine IDs for the auxiliary objects.
-- Publish CPU GART writes with a full memory barrier before acknowledging upload. Common-buffer allocation and coherent PTE policy are unchanged; this addresses publication ordering, not a proven cache failure.
-- Preserve the TSG/context-share handles instead of clearing them after bring-up. On each new lease, reserve ownership, release the old TSG tree and sibling notifier through RM, then clear/reuse backing only after acknowledged teardown and recreate/verify the channel. The device fault-shadow registration persists across channel lifetimes.
-- Host suites, rebuilt Mesa/miniport and XP import audit pass. Exactly one .210 VFIO suite run was performed: test_logs/v3.0.0.210-20261115-202448.log.
-- REGRESSION: new channel recreation fails before the isolated FB probe and Mesa submission. RM FREE and allocation RPCs return success, but the recreated initialization probe fetches its command without releasing the fence. GR physical initialization control returns status 0x1f; context lookup returns 0x31. Assertions rise 1 -> 5 -> 9 across attempted renewals. No fresh-channel PASS or hardware OpenGL result. Later cube reports SOFTWARE.
-- RM routing diagnostics confirm A140 I2M engine ID 1, C7B5 copy engine ID 9. Class identity and GART publication are implemented; their effect on the original stall is masked by the new lifecycle failure. Do not call all three areas fixed.
-- Next: separate boot-only GR/context promotion initialization from per-channel creation; audit promoted context backing lifetime and RM resource teardown before reusing it. The current renewal calls the boot bring-up routine and this is not a verified upstream-equivalent channel lifecycle. Preserve .209 as the previous baseline. Pause after this single run.
-
-## Consolidated .209 candidate (single hardware run, then pause)
-
-- Restores upstream Ampere copy selection by excluding patch 0031 (legacy Fermi M2MF methods on the I2M subchannel).
-- Removes the extra WAIT_FOR_IDLE before the miniport completion semaphore; retains release-after-writes completion.
-- Rejects takeover of an owned channel and quarantines unresolved timed-out channels until teardown. Channel recreation/per-client hardware contexts remain unfinished.
-- Rebuilds Mesa and records patch hashes, upstream revision and DLL hash in dist_full/mesa-build-manifest.txt.
-- Audit correction: OpenRM g_kern_bus_nvoc.c selects a no-op PCIe doorbell flush on GA104; the extra flush implementation is GH100-only. Do not treat that as a confirmed missing GA104 operation.
-- Remaining differences: external XP page tables, fixed VRAM allocator, class translation, WGL resource-layout/presentation patches, shared hardware channel lifetime and synchronous submission. This candidate does not claim complete OpenRM host integration.
-- One .209 VFIO run: host tests, fresh Mesa/driver build and XP import audit passed. Nouveau first batch still stalls at PB_GET +0x260 (dword 0x98), inside the 648-byte upload to 0x230204c8. Channel quarantine prevents the subsequent queue of timeout submissions. Firmware assertions still rise from 1 to 3. Gears reports one iteration in 10 seconds; GPU frame completion remains unproven. Later cube uses GDI Generic and reports OPENGL_RESULT SOFTWARE; this is not hardware success.
-- Final .209 result: isolated FB P2MF PASS, built-in GR triangle/green-pixel/semaphore PASS, full suite exit 1 because OPENGL_RESULT SOFTWARE. Guest completed the 180-second session and shut down. Paused after exactly one hardware run; no second revision or boot.
-- Current log: test_logs/v3.0.0.209-20261115-201026.log. Package: dist_full/. The manifest inventories all patch files; the active application list is test/apply_mesa_xp_patches.sh and excludes 0031.
-- Next investigation when resumed: replay both uploads and the intervening copy/state packets from the actual first Mesa batch, using a fresh channel. Compare A040/A140 method semantics and CE-to-I2M ordering. Full channel recreation and resource-kind/presentation cleanup remain pending.
-
-## Latest Run & Artifacts
-
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.214-20261116-103335.log`
-- **Latest hardware-tested version**: `v3.0.0.214`
-- **Current state**: `.208` sends `NO_MAP | NONCONTIGUOUS | VIDMEM` (`0x40000210`) for FB page-list registration. Hardware accepted the registration and the isolated P2MF transfer passed.
-- **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.231-20261116-163640.log` (active symlink: `vm_serial.log`)
+- **Previous Run Log**: `test_logs/v3.0.0.230-20261116-163045.log`
+- **Target VM**: `winxp_x64.qcow2` (Windows XP Professional x64 Edition, NT 5.2 SP2)
+- **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO pass-through.
+- **Distribution Package**: `dist_full/` (driver `nvxmp.sys`, `nvxdisp.dll`, `nvxogl64.dll`, `nvx.inf`, `install.bat`, `wglgears.exe`, `test_gpu_accel.exe`)
 
 ---
 
-## Design Architecture
+## 2. Current Status & Implementation (latest test package v3.0.0.231)
+
+### What Was Implemented in v3.0.0.227 and v3.0.0.228:
+1. **Native Clear Ownership and OpenRM ChID heaps**:
+   - `src_driver/nvx_gsp.c`: Native clear requires the request owner's ready channel; it never borrows another client or the boot channel.
+   - `src_driver/nvx_openrm_containers.c`: ChID and FIFO-data EHeaps allocate/free paired offsets, matching upstream `kfifoChidMgrAllocChid_IMPL` and `kfifoChidMgrFreeChid_IMPL`. The `.231` VFIO run still reproduces the same-ChID queue stall, so additional upstream lifecycle state remains unmodeled.
+2. **`wglgears` Hardware Pixel Format Selection**:
+   - `test/3d_tests/glxgears_main.cpp`: Updated the candidate pixel format loop to scan from `fmt = 1` up to `maxScan` (`totalFormats` or 100), rather than starting at format 37. This prevents skipping hardware-accelerated Mesa formats (formats 1..36).
+   - Added dynamic load fallback for `nvxmesa.dll` when `nvxogl64.dll` is queried.
+   - Recompiled `wglgears.exe` (x86_64) and `wglgears32.exe` (i686), updating `dist_full/wglgears.exe`.
+3. **Removal of Invalid WOW64 32-bit to 64-bit Registry Mappings**:
+   - `dist_full/nvx.inf`, `dist_full/install.bat`, and `test/update_disk_driver_user.sh`: Removed `HKLM\Software\Wow6432Node\...` entries that registered the 64-bit `nvxogl64.dll` for 32-bit processes, eliminating `LoadLibrary` error 126 (`ERROR_MOD_NOT_FOUND`).
+   - Added explicit cleanup in `install.bat` to purge stale `Wow6432Node` OpenGL driver keys.
+4. **Client Channel Teardown on Reopen (Error 183 Prevention)**:
+   - `src_driver/nvxmp.c`: In `Nvx3dOpenGraphicsClientLocked()`, added logic to cleanly tear down and recycle any existing client channel instance that is not in a ready state before allocating fresh backing memory, preventing session reuse collisions and error 183 (`ERROR_ALREADY_EXISTS`).
+   - `.228` restores the OpenRM `GPU_EVICT_CTX` step after STOP_CHANNEL and blocks reopen if the prior channel cannot be retired. Hardware testing shows the subsequent client's queue still stalls, so these changes are not a complete fix.
+5. **Host Unit & Regression Suites**:
+   - `make -C src_driver check`: Passes all 12 test suites (3D ABI, winsys, xf86drm, GR context, display, MMU, seq, RPC, firmware, GSP host mock, VBE, OpenRM shim, VBIOS).
+
+---
+
+## 3. Previously Identified Issues (Prior to v3.0.0.227)
+1. **FIFO MMU Fault / Unbound Instance Block on Native Clear**:
+   - Observed in `.220` through `.226`: In `test_gpu_accel`, ad-hoc tokens without leased channels triggered `NvxGspSubmitNvc0NativeClear()` falling back to boot ChID 2. Because client ChID 10 was promoted via `GPU_PROMOTE_CTX`, submitting to ChID 2 triggered an MMU fault on GPFIFO (`0x10009000`, type 4 `FAULT_UNBOUND_INST_BLOCK`, RC 31), causing subsequent channel quarantine.
+2. **`wglgears` Selecting GDI Generic**:
+   - Observed in `.225` and `.226`: `glxgears_main.cpp` started searching at format 37. When Windows XP GDI returned format 3 (`PFD_GENERIC_FORMAT`), the format scan completely skipped hardware Mesa formats 1..36, falling back to GDI Generic software emulation.
+3. **32-bit WOW64 Context Creation Failure (Error 126)**:
+   - Observed when running 32-bit OpenGL applications: `Wow6432Node` pointed to 64-bit `nvxogl64.dll`, causing PE architecture mismatch on `LoadLibrary`.
+4. **Context Recreation Stalls & Error 183**:
+   - Observed when reopening WGL contexts or creating subsequent client channels after teardown without complete backing resource reclamation.
+5. **Scratch Page Aliasing**:
+   - Identified in `.224` / `.225`: Runtime CE push slots at `scratch+0xd000` overlapped the boot GR channel's RM method buffer (`scratch+0xc000..0xdfff`), and upload diagnostic readbacks used `scratch+0xa000` (GR RAMIN). Fixed by relocating CE completion fences to `+0x3400` and diagnostic readbacks to `+0xe000`.
+
+*(Note: The latest test execution log is available at `test_logs/v3.0.0.227-20261116-150714.log` for reader inspection and evaluation.)*
+
+---
+
+### Latest `.227` run result and visual correctness
+- The first 64-bit `wglgears` process selected pixel format 63 (`PFD_GENERIC_FORMAT=NO`), loaded Mesa, reported `GL_RENDERER = NV170`, and completed 121 frames in 6 seconds (20.2 FPS). It exited successfully and the log records client-channel FREE acknowledgement afterward. This establishes that the gears process reached the hardware ICD path; it does **not** establish correct image output.
+- User observation: the hardware gears looked strange, with parts missing. Treat this as an active rendering-correctness failure even though the renderer string is `NV170`. The latest serial log has no screenshot or gears framebuffer readback, so it cannot identify which geometry or pixels are missing. Next validation should capture the actual gears window/framebuffer and correlate it with the gear draw batches, buffer references, and completed fences.
+- Keep this separate from the Antigravity GPU Accel test later in the same log: that process reports GDI Generic, `screens=0`, `gpu_batches=0`, and fails its GPU pixel tests. It is a separate WGL/pixel-format path and does not negate the earlier gears ICD selection. The 32-bit gears attempt still fails context creation with error 183.
+- `.227`'s pixel-format scan appears to correct the specific 64-bit gears fallback seen in `.225/.226`; it does not yet correct the Antigravity format selection or prove the gears are rendered completely. `.227` also changes native-clear routing, but the suite still reports native-clear failure, so that path remains unresolved.
+- Source recheck: current `nvx_ce.c` runtime CE push slots use `scratch+0x10000`, so the earlier statement that they still use `+0xd000` was stale. The older alias is historical; do not treat it as the current cause without checking the packaged binary/build identity.
+
+### Code trace of the later GDI Generic fallback
+- Latest serial lines 1089 onward acknowledge the first gears channel FREE, then allocate a new channel using ChID 10 and queue VA `0x11a00000` again, with different physical backing. Both creation attempts reach `NvxGrVerifyClientQueue` but time out (lines 1344/1433): USERD GET/PUT=1, GP_FETCH=1, PB_FETCH/GET/PUT=0, completion fence absent. Thus explicit FREE did execute; successful channel recreation is still unresolved.
+- `src_driver/nvx_gr_clients.c:NvxGrVerifyClientQueue` builds SET_OBJECT plus a release semaphore in private backing, publishes FIFO[0], updates PUT and kicks. Its missing fence makes `NvxGspOpenClientChannel` fail at `private queue fence verification`; `src_driver/nvxmp.c:Nvx3dOpenGraphicsClientLocked` returns failure to CHANNEL_OPEN.
+- `mesa_patches/nvx_winsys.c:NvxWinsysOpenNouveauChannel` consequently returns 0. `mesa_patches/nvx_xf86drm.c:nvx_drm_channel_alloc` records `LastChannelAllocResult=2` and returns EBUSY. That diagnostic value is a local shim result, not an OpenRM status. Mesa logs `Nouveau FIFO channel creation failed`; the test subsequently chooses generic format 3 and reports GDI Generic. `test/test_gpu_accel.c` accepts the format without rejecting PFD_GENERIC_FORMAT before SetPixelFormat.
+- This traces the fallback to a kernel channel-recreation failure before the later bounded boot-clear MMU fault. It does not prove why the new queue fails: GET/GP_FETCH progress alone does not establish that its intended pushbuffer was fetched. Next audit must compare fresh/recreated instance/RAMFC, queue translation, context promotion and scheduler state. Missing visible gears parts remain a separate unresolved correctness symptom.
+
+## 4. Design Architecture
 
 The NVX driver stack enables hardware-accelerated 2D and 3D graphics on Windows XP Professional x64 Edition running on modern Ampere (GA104) hardware. The stack consists of a dual-head XDDM display driver, an NT 5.2 miniport driver hosting an OpenRM GSP client, and a customized Mesa Gallium user-mode driver stack.
 
@@ -314,12 +205,13 @@ The NVX driver stack enables hardware-accelerated 2D and 3D graphics on Windows 
 
 ---
 
-## Relevant Files & Code Locations
+## 5. Relevant Files & Code Locations
 
 ### 1. Kernel-Mode Miniport Driver (`src_driver/`)
-- **`src_driver/nvxmp.c`**: Core driver entry, XDDM callbacks (`HwVidInitialize`, `HwVidStartIO`), 3D IOCTL dispatchers, buffer lifecycle management (`Nvx3dAllocBuffer`, `Nvx3dFreeBuffer`), GART page reclamation, and batch submission.
-- **`src_driver/nvx_gsp.c`**: Host-GSP communication, command message queue (MSGQ), channel allocation, pushbuffer kick-off (`NvxGspSubmitNvc0Batch`), and release fence tracking.
-- **`test/nvx_p2mf_probe.c`**: Optional XP x64 in-channel P2MF BO diagnostic. Run the full test script with `NVX_NVC0_P2MF_PROBE_TARGET=gart` or `fb` to upload four dwords and check the submission fence and CE readback.
+- **`src_driver/nvxmp.c`**: Core driver entry, XDDM callbacks (`HwVidInitialize`, `HwVidStartIO`), 3D IOCTL dispatchers, buffer lifecycle management (`Nvx3dAllocBuffer`, `Nvx3dFreeBuffer`), client session open/close, GART page reclamation, and batch submission.
+- **`src_driver/nvx_gsp.c`**: Host-GSP communication, command message queue (MSGQ), channel allocation, pushbuffer kick-off (`NvxGspSubmitNvc0Batch`), native clear execution (`NvxGspSubmitNvc0NativeClear`), and release fence tracking.
+- **`src_driver/nvx_gr_clients.c`**: Graphics client channel allocation, initialization, promotion (`GPU_PROMOTE_CTX`), teardown, and channel lookup (`NvxGspFindAnyReadyClientChannel`).
+- **`src_driver/nvx_ce.c`**: Copy Engine routines, runtime uploads/downloads, staging synchronization, and completion fences.
 - **`src_driver/nvx_disp_rpc.c`**: Dual-head display RPC controls, scanout configuration, EDID parsing, and secondary head management (`NvxNativeSetSecondaryScanout`).
 - **`src_driver/nvx_gr_context.c` / `nvx_gr_context.h`**: GART heap management (`NvxGartReserve`, `NvxGartRelease`) and GPU 3D graphics context structures.
 - **`src_driver/nvx_3d_abi.h`**: Public user/kernel interface definition: IOCTL codes (`IOCTL_NVX_3D_*`), buffer structures, batch headers, and kernel pushbuffer validator logic (`Nvx3dValidateNvc0ObjectBindingsEx`).
@@ -340,97 +232,8 @@ The NVX driver stack enables hardware-accelerated 2D and 3D graphics on Windows 
 - **`mesa_patches/0002-nvx-gallium-bridge.patch`**: WGL ICD bridge export (`DrvCopyContext`, `DrvCreateContext`, `DrvSetContext`, etc.).
 
 ### 4. Build, Packaging, and Test Harness (`test/` & `dist_full/`)
-- **`test/build_mesa_xp64.sh`**: Cross-compiles Mesa using MinGW-w64 and Meson into `nvxogl64.dll`.
-- **`test/apply_mesa_xp_patches.sh`**: Validates `mesa/` submodule commit and cleanly applies patches `0001` through `0031`.
+- **`test/3d_tests/glxgears_main.cpp`**: 64-bit and 32-bit standalone WGL gears test utility.
 - **`test/test_full_driver.sh`**: Compiles driver components, verifies import tables, updates the guest disk image, and launches the QEMU/KVM VFIO guest.
 - **`test/update_disk_driver_user.sh`**: Mounts guest disk image via guestmount and updates system binaries and registry keys.
-- **`dist_full/nvx.inf`**: Windows XP setup information file registering driver services, display resolution defaults, and 32/64-bit OpenGL ICD registry entries.
-
----
-
-## Current Status (latest hardware test: v3.0.0.203)
-
-OpenRM framebuffer page registration now follows the supported `ALLOC_MEMORY` RPC path. `.201` confirms the 4 MiB FB BO registration succeeds, and a small BO registers and deregisters successfully. `.202` adds an isolated test app for submitting the Mesa NVE4 P2MF upload into a client BO and checking its fence/readback. The driver package passes host tests and builds for XP x64.
-
-Rendering is still blocked, but `.203` proves the P2MF channel path can write a GART BO: `NVX [P2MF-PROBE]` reports `submit=completed fence=2`, and CE readback matches all four uploaded dwords. This is a real hardware result, not just command validation. `.202` had rejected the same probe before queueing because `GspGraphicsUserAllocReady` remained false for GART-only BOs (`ready=1`, `fault=0`, `mmu=0`, `userAlloc=0`); `.203` sets that flag only after a GART BO is fully mapped and committed.
-
-The regular Nouveau path still stalls at PB_GET `pushVa + 0x480` (dword `0x120`), USERD GET remains 6, and its release fence never completes. Firmware assertion count rises from 1 to 3. wglgears reports one frame in 84 seconds (0.012 FPS). `.203` also includes the successful built-in `GR RESULT` and 2D markers. The isolated GART test establishes that P2MF object binding, packet encoding, GPFIFO submission, fences, and CE readback work for system-memory BOs. The leading remaining difference is the destination: Nouveau's first upload writes into a VRAM BO. Hardware OpenGL remains unproven.
-
-- `.198`: used unsupported `NV01_MEMORY_LOCAL_USER`; GSP rejected allocation. One separate GL workload reached 55.2 FPS, but later tests failed.
-- `.199`: function 4 `ALLOC_MEMORY` returned success; caller incorrectly expected an echoed parameter payload and discarded the BOs.
-- `.200`/`.201`: corrected registration response handling; `.201` also corrects the NVOS00 FREE status field and verifies successful deregistration.
-- Mesa submodule remains pinned and unmodified; XP customizations stay in `mesa_patches/`.
----
-
-## Current Implementation Tested (v3.0.0.203)
-
-- Ordinary Nouveau VRAM BOs now register their FB page list with OpenRM via RPC function 4 (`ALLOC_MEMORY`), class `NV01_MEMORY_LIST_FBMEM` (`0x82`), using the `rpc_alloc_memory_v13_01` payload verified against the pinned OpenRM 535 generated structure and implementation. The BO GPU VA remains in the existing GSP-installed VRAM aperture; frees deregister the page-list object with RPC function 10.
-- `MAP_MEMORY_DMA` and `NV01_MEMORY_LOCAL_USER` are not used for these BOs: pinned OpenRM 535 source configures the GA104 GSP DMA-map hook as a stub, and `.198` also observed an invalid-function response. The FB page-list registration uses the supported `ALLOC_MEMORY` RPC.
-- Large page lists use device-owned RPC buffers and multi-record queue staging, avoiding a large kernel stack allocation. Range selection checks the current free FB heap and overlaps with live BOs.
-- The Gallium/Mesa GEM interface and GART-backed system-memory path are unchanged. Special depth BOs retain their legacy allocation/page-kind handling.
-- Host verification: `make -C src_driver check` passes; `make -C src_driver full` builds `nvxmp.sys` for XP x64.
-- `.201` confirms the FB page registration path works: the 4 MiB FB BO registers successfully and a small BO registers and deregisters successfully. The NVOS00 FREE status field correction did not change rendering. The first Nouveau batch still stalls at PB_GET `pushVa + 0x480` (dword `0x120`), USERD GET remains 4, and fences do not complete. Firmware assertions rise from 1 to 3. 64-bit wglgears completes only one frame in 83 seconds (0.012 FPS); the suite exits with “hardware OpenGL was not proven,” with no OpenGL success marker. Thus FB page registration is necessary for OpenRM ownership but is not the current stall root cause.
-
-## What Has Been Implemented & What Was Tried
-
-### 1. Engine Hazard & Pushbuffer Linear Transfers (v3.0.0.194)
-- **Implemented**: Created `mesa_patches/0031-nouveau-xp-use-m2mf-linear-copy.patch` and integrated it into `test/apply_mesa_xp_patches.sh` and `test/build_mesa_xp64.sh`.
-- **Change**: In `mesa/src/gallium/drivers/nouveau/nvc0/nvc0_transfer.c:nvc0_init_transfer_functions`, configured `nvc0->base.copy_data = nvc0_m2mf_copy_linear` for XP / Windows builds instead of `nve4_m2mf_copy_linear`.
-- **Rationale**: Routes linear staging copies through the M2MF/P2MF subchannel (subchannel 2) rather than the asynchronous Copy Engine (subchannel 4), ensuring sequential execution on the same engine and avoiding cross-engine hazards with P2MF uploads.
-
-### 2. GART Heap Recycling & Page Management (v3.0.0.194)
-- **Implemented**: Restored `NvxGartRelease(&engine->GspGartHeap, saved.GartFirstPage, saved.GartPageCount)` in `src_driver/nvxmp.c:Nvx3dFreeBuffer` across both pending and immediate unmap branches once GSP unmap and TLB invalidation confirm.
-- **Implemented**: In `src_driver/nvxmp.c:IOCTL_NVX_3D_CLIENT_CLOSE`, added automated cleanup iterating over active buffers belonging to the terminating client session and freeing them to ensure no GART pages remain quarantined or leaked across process restarts.
-
-### 3. Channel Object Binding Validation (v3.0.0.194)
-- **Implemented**: In `src_driver/nvxmp.c:IOCTL_NVX_3D_SUBMIT_BATCH`, updated the `requireGraphicsBinding` condition passed to `Nvx3dValidateNvc0ObjectBindingsEx`:
-  ```c
-  (engine->Nvx3dChannelBoundToken != header.ClientToken) && (engine->GspGraphicsObjectClassEngineId == 0)
-  ```
-  This prevents the kernel validator from rejecting batches from subsequent client tokens when the hardware channel already has the 3D graphics class (`0xC797`) bound.
-
-### 4. Dual Monitor & 1440p Resolution Support (v3.0.0.193)
-- **Implemented**: In `src_driver/nvxmp.c:HwVidInitialize`, upgraded fallback/degraded VBE INT10 mode lists to authentic GA104 DMT modes up to 2560x1440 and 4K so the primary display is not capped at 1080p.
-- **Implemented**: In `src_driver/nvx_disp_rpc.c:NvxNativeSetSecondaryScanout`, updated Head 0 default target resolution to 2560x1440 when EDID timing is not preset.
-
-### 5. Registry & WOW64 Integration (v3.0.0.193 - v3.0.0.194)
-- **Implemented**: Registered OpenGL ICD entries under both `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp` and `HKLM\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\nvxdisp` across `dist_full/nvx.inf`, `dist_full/install.bat`, and `test/update_disk_driver_user.sh` (including explicit parent key hierarchy creation in hive imports).
-
-### 6. Pushbuffer Ring Architecture & Hardware Synchronization (v3.0.0.192)
-- **Implemented**: A 4-slot ring buffer for command batch submission in `src_driver/nvxmp.c` and `src_driver/nvx_gsp.c`, allowing queued pushbuffers to cycle with release fences instead of reallocating single slots.
-- **Implemented**: Removed invalid direct PBDMA MMIO writes from guest miniport, delegating work submission and GP_PUT advances cleanly to GSP-managed channels.
-
----
-
-## Current Issues and Diagnostics (latest hardware run v3.0.0.208)
-
-1. **GPU submissions stall before their release fence completes (still present in `.208`)**:
-   - PB_GET still stops at dword `0x120` in the first Mesa batch, USERD GET remains at `6` while PUT advances, and no PGRAPH trap is reported. `.208` reaches OpenGL renderer identification (`NV170`), completes the first cube draw submission up to `SwapBuffers`, but never emits `OPENGL_RESULT`; the full test exits with “hardware OpenGL was not proven.”
-   - **Evidence in `.195`**: `nvx_drm_submit_pushbuf()` copied `device->device` into a stack-local `winsys`; `NvxWinsysSubmitBatch()` mutates its four-slot staging ring and last-fence fields on that copy. The adapter discarded the mutations at return, so later DRM submissions restarted at the same slot without seeing the recorded fence. The ring reuse guard in `nvx_winsys.c` therefore could not work across IOCTLs.
-   - **`.196` candidate result**: Ring state persists across adapter calls and later requests use varying pushbuffer buffers, but the first hardware fence still times out. This change alone did not solve the stall.
-   - **`.197` batch correlation**: The first failed kernel batch is the same `0x29bc`-byte Nouveau pushbuffer dump (10 BO references, `0xa6f` input dwords). PB_GET stops at dword `0x120` inside the `NVA040_LAUNCH_DMA` / `LOAD_INLINE_DATA` upload that starts at dword `0x97`; received and GPU-visible windows match, ruling out corruption in the copy to the GPU-visible pushbuffer.
-   - **Packet validity check**: This P2MF sequence matches upstream `nve4_p2mf_push_linear()` in `mesa/src/gallium/drivers/nouveau/nvc0/nvc0_transfer.c`: destination `0x230204c8`, line length `0x288` bytes, one line, and an `EXEC` plus 162 inline data words. The destination is inside referenced VRAM BO `0x23020000` (4 MiB). The earlier upload targets `0x22e9f600`, inside referenced BO `0x22e20000` (512 KiB). The available evidence does not show a malformed packet length or out-of-range destination. It points to P2MF upload execution/backpressure or destination mapping/access, but does not prove which.
-   - **OpenRM FB metadata**: the driver's old flags (`0x40000010`) omitted the OS02 `VIDMEM` location. `.208` now sends `NO_MAP | NONCONTIGUOUS | VIDMEM` (`0x40000210`), matching OpenRM's conversion for a multi-page `NV01_MEMORY_LIST_FBMEM` request. The FB probe passed after this change. The GSP MAP_MEMORY_DMA hook is still stubbed on GA104, so XP must install the external page-table mapping; that OS layer cannot be identical to Linux's kernel mapping code.
-   - **P2MF FB controls**: `.205` passed four dwords at the base of a registered FB BO. `.206` passed 162 inline dwords (648 bytes) at offset `0x4c8`. `.207` matched Mesa's target VA `0x23020000` and BO size. `.208` repeated the FB probe with the corrected flags: target VA `0x23020000`, offset `0x4c8`, 648-byte upload, completed fence, matching readback, `[P2MF_BO_RESULT] PASS target=FB`.
-   - **Remaining submission difference**: `.208` still logs repeated `nouveau: kernel rejected pushbuf: Operation not permitted` after GPU submissions time out. The next step is to capture and compare Mesa's actual stalled P2MF packet/data and surrounding method sequence against the passing minimal probe, then isolate which preceding packet or resource reference makes the full stream stop. Do not change the known-passing FB aperture based only on the current timeout; avoid `MAP_MEMORY_DMA` on GA104 because its OpenRM HAL hook is a stub.
-   - **Open-module comparison**: The checked-out `open-gpu-kernel-modules` submodule is pinned at `535.113.01` (`f59818b`). `src/nvidia/src/kernel/gpu/mem_mgr/channel_utils.c:326` shows the host FIFO ordering: write GPFIFO entry, flush write-combine buffer, publish USERD GPPut, flush again, perform BAR0 PCIe flush, then ring the configured doorbell. `src/nvidia/src/kernel/gpu/fifo/arch/ampere/kernel_fifo_ga100.c:146` dispatches GSP systems to an internal doorbell helper. Our miniport already gets PBDMA fetch progress, so don’t replace the working Linux/Nouveau winsys with a second ring implementation; compare ordering only if the `.197` command-level evidence points away from a bad packet.
-
-2. **Mesa reports `kernel rejected pushbuf: Operation not permitted` (confirmed in `.208`)**:
-   - The ICD and Nouveau screen initialize and renderer reports `NV170`; the pushbuf path reaches miniport submission, but Mesa's error text alone does not identify which validation or submission boundary returned failure.
-   - **Evidence in `.208`**: the miniport log shows `ERROR_NOT_READY` after a GPU fence wait timeout, not an initial ABI rejection. The detailed `NVC0-BATCH` and PBDMA diagnostics are in `src_driver/nvxmp.c` and `src_driver/nvx_gsp.c`.
-
-3. **Firmware assertion count increases during 3D startup (confirmed in `.208`)**:
-   - Counter rises from 1 during startup to 3 as graphics work begins. No accompanying PGRAPH trap was captured, so the cause is not established. Compare assertion/RC-fault messages with the first failing batch before changing channel setup.
-
-4. **VRAM allocation pressure (observed in `.208`, causality unknown)**:
-   - Two 64 MiB VRAM allocations fail while GART allocations continue. Track against the first submission timeout, but current evidence does not show this caused it.
-
-### Next test procedure
-
-- `.205` outcome: guest log records `submit=completed`, matching readback `4e565831,504d4632,13579bdf,2468ace0`, and `[P2MF_BO_RESULT] PASS target=FB`.
-- `.206` outcome: guest log records target VA `0x22e20000`, 648-byte upload at `0x4c8`, completed fence, matching readback, and `[P2MF_BO_RESULT] PASS target=FB`.
-- `.208` host tests, XP x64 package/import audit, and build pass. Hardware FB P2MF probe passes with the corrected flags. The full suite still fails its OpenGL success criterion: the first cube draw reaches swap, but there is no completed frame result.
-- Continue using OpenRM's supported FB `ALLOC_MEMORY` page-list object and RM VASpace/TLB controls. Do not attempt `MAP_MEMORY_DMA` or `ALLOC_VIRTMEM` RPCs on GA104: pinned OpenRM 535 source configures these hooks as stubs. The remaining XP-specific mapping work belongs in the external page-table setup, aligned with upstream Nouveau's local VASpace management.
-- Compare the full Mesa batch's failing P2MF upload and preceding methods/BO references against the passing minimal upload; the FB destination, VA, BO size, upload length, fence, and readback now pass as isolated controls.
-- `.203`'s successful P2MF GART probe and the built-in GR scratch probe are passing controls; continue requiring completed NVC0 draw fences, cube readback, `OPENGL_RESULT` pass, and multiple wglgears frames before calling hardware OpenGL operational.
-- Require completed NVC0 draw fences, cube render-target readback, `OPENGL_RESULT` pass, and multiple successful wglgears frames before calling hardware OpenGL operational. `.198` rendered one workload at 55.2 FPS but failed later tests; `.199` exposed the return-payload validation bug; `.200` fixes registration but still stalls; `.201` verifies the corrected teardown field and reproduces the same stall.
+- **`dist_full/nvx.inf`**: Windows XP setup information file registering driver services, display resolution defaults, and 64-bit OpenGL ICD registry entries.
+- **`dist_full/install.bat`**: Deployment batch script for installing driver and configuring registry inside the VM.
