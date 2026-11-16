@@ -10,6 +10,8 @@ Updated November 16, 2026. Latest test build: **3.0.0.236**.
 - Each mapped shadow tracks a baseline. The first publication initializes
   previously undefined backing to match the shadow (including zero stores).
   GPU read refresh merges unpublished CPU words instead of discarding them.
+  Partial uploads keep the shadow's read-freshness fence unchanged, so a later
+  CPU read still refreshes untouched words changed by the GPU.
   Changed uploads wait for the previous BO fence; failed final unmaps retain
   the shadow for retry rather than dropping unpublished data.
 - The first 48 changed ranges per process log pushbuf item kind=19:
@@ -20,8 +22,9 @@ Updated November 16, 2026. Latest test build: **3.0.0.236**.
   added; the full runner repeats all checks. Added regression coverage for
   writes via READ-labelled maps, preserving GPU changes elsewhere in a BO,
   unchanged repeat flushes, merge on refresh, and initial backing contents.
-- Hardware outcome pending. The first build was stopped before deployment
-  to cover the initial-zero edge case; no guest boot occurred in that attempt.
+- Hardware outcome pending. Two build attempts were stopped before deployment
+  to cover initial-zero and partial-upload freshness edge cases. No guest boot
+  occurred in those attempts; the final build repeats all host checks.
 
 ## Current status
 

@@ -604,6 +604,9 @@ main(void)
          assert(mock.upload_bytes == before + 4);
          assert(NvxNouveauBoFlush(&bo));
          assert(mock.upload_bytes == before + 4);
+         assert(bo.shadow_fence < bo.last_fence);
+         assert(NvxNouveauBoRefreshRead(&bo));
+         assert(mapped[128] == 0xC7);
          /* Refresh must merge GPU words without dropping pending CPU data. */
          mapped[192] = 0xD8;
          backing->storage[256] = 0xE9;

@@ -351,7 +351,8 @@ NvxNouveauBoFlush(NVX_NOUVEAU_BO *bo)
       return 1;
    bo->shadow_base_valid = 1U;
    bo->contents_valid = 1;
-   bo->shadow_fence = bo->last_fence;
+   /* A partial upload does not refresh untouched GPU-written words. Keep
+    * shadow_fence stale until an actual download has merged those words. */
    return 1;
 }
 
