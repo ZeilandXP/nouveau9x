@@ -1,6 +1,17 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 16, 2026: `.219` preserves the `.217` boot GR and one successful Nouveau client run, but subsequent client-channel recreation still fails and forces later OpenGL tests to software rendering. A clean USERD reset did not fix it. Hardware evidence now shows ChID 10 and GPFIFO VA `0x11A00000` reused for the next client: PBDMA consumes the GPFIFO entry (`GP_GET=GP_PUT=GP_FETCH=1`) but never begins pushbuffer fetch (`PB_FETCH=0`), with no PBDMA interrupt. The next targeted experiment is to prevent immediate ChID reuse and see whether the failure follows the channel identity. Latest log: `test_logs/v3.0.0.219-20261116-113518.log`.
+Updated November 16, 2026: `.220` proves a hardware OpenGL run at 60.8 FPS (`OPENGL_RESULT RENDERED`), but the full test still fails. The bounded native clear afterward faults both boot ChID 2 and client ChID 10 with RC type `0x1f`, which upstream defines as `ROBUST_CHANNEL_FIFO_ERROR_MMU_ERR_FLT`. PBDMA reached the end of the pushbuffer, but the semaphore did not complete. The `.220` ChID quarantine was not exercised because the run created only one private client queue; it is removed from the next candidate. Latest log: `test_logs/v3.0.0.220-20261116-114422.log`.
+
+## .220 hardware test: Nouveau draws; following native clear causes FIFO MMU fault
+
+- Ran the full VFIO command with auto retry and all GR probes. Host checks and driver build passed. Hardware log: `test_logs/v3.0.0.220-20261116-114422.log`; runner output `/tmp/nvx-220-full-test.log`; suite exits 1.
+- One Nouveau OpenGL run completed 300 frames in 4.9337 seconds (60.8 FPS), classified `[OPENGL_RESULT] RENDERED`. This establishes that this application path submitted work through the GPU in this run.
+- The bounded 28-dword native NVC0 clear then timed out at fences `0x70f` and `0x710`. PBDMA fetched the pushbuffer through `0x1000f35c`, but no semaphore was observed. On the following RM drain, channel RC notifications reported type `0x1f` for ChID 2 and ChID 10. Upstream `nverror.h` maps 31 to `ROBUST_CHANNEL_FIFO_ERROR_MMU_ERR_FLT`; the driver had not yet logged the actual fault address. The test then marked the graphics channel faulted, so later OpenGL probes failed or selected GDI Generic. Firmware assertion count stayed at baseline 1.
+- `.220` temporarily retained retired IDs until teardown to see whether immediate reuse mattered. It did not log a retired ID and only one private queue was verified, so the experiment did not exercise ChID reuse. This behavior diverges from normal OpenRM teardown and is removed in the next candidate.
+- Next: dump the already registered client shadow-fault queue when the FIFO MMU RC notification arrives, including the faulting VA/type/access fields from its packet format; also query `GET_MMU_FAULT_INFO` on a channel timeout if the GSP RPC permits it. Then compare the faulting VA with the clear target BO mapping and method stream before changing submission semantics.
+- Relevant files: `src_driver/nvx_gsp.c` (RC event drain, fault queue, native clear), `src_driver/nvxmp.c` (FB BO mapping and clear ABI), `src_driver/nvx_3d_abi.h` (packet validation), `test/test_gpu_accel.c` (clear stream), `open-gpu-kernel-modules/src/common/sdk/nvidia/inc/nverror.h`, and this log.
+
+The `.219` channel-recreation findings below remain a separate unresolved issue; `.220` did not test its quarantine hypothesis.
 
 ## .219 hardware test: first client passes; recreated channel stalls before pushbuffer fetch
 

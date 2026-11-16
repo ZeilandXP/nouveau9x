@@ -67,8 +67,14 @@ static BOOLEAN NvxGrDestroyClient(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CHANNE
         c->MemoryAllocated=FALSE;
     }
     if(c->HardwareIdAllocated) {
-        if(nvx_openrm_chid_free(dev->GspChannelIdHeap,&c->ClientToken,
-                               c->HardwareChannelId)!=NV_OK) goto unsafe;
+        /* Diagnostic quarantine: the next client used the same ChID as its
+         * predecessor and PBDMA fetched its GPFIFO entry but never began the
+         * pushbuffer. Keep this ID reserved until the device's RM heap is
+         * destroyed so one test can distinguish immediate ChID reuse from
+         * address/packet problems. A production policy needs bounded reuse. */
+        LogStr("NVX [GR-CLIENT]: quarantining retired chid=");
+        LogHex(c->HardwareChannelId);
+        LogStr(" until device teardown\n");
         c->HardwareIdAllocated=FALSE;
     }
     c->Faulted=FALSE;
