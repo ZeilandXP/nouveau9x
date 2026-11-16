@@ -36,7 +36,9 @@ static BOOLEAN NvxGrDestroyClient(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CHANNE
 {
     NVA06F_CTRL_STOP_CHANNEL_PARAMS stop={0};
     NV2080_CTRL_GPU_EVICT_CTX_PARAMS evict={0};
-    ULONG release[4]={dev->GspClientHandle,dev->GspDeviceHandle,0,0};
+    /* Match GspRmFree: the object identifies its parent, so the wire parent
+       is NV01_NULL_OBJECT, including frees of children of a TSG. */
+    ULONG release[4]={dev->GspClientHandle,0,0,0};
     c->Ready=FALSE;
     if(c->Scheduled) {
         if(!NvxGspControl(dev,c->Channel,NVA06F_CTRL_CMD_STOP_CHANNEL,&stop,sizeof(stop)))
@@ -50,6 +52,17 @@ static BOOLEAN NvxGrDestroyClient(PNVX_DEVICE_EXTENSION dev,NVX_GR_CLIENT_CHANNE
         if(!NvxGspControl(dev,dev->GspSubdeviceHandle,
                          NV2080_CTRL_CMD_GPU_EVICT_CTX,&evict,sizeof(evict))) goto unsafe;
         c->Promoted=FALSE;
+    }
+    if(c->Channel) {
+        /* kchannelDestruct sends the channel FREE before freeing its group.
+           Its acknowledgement retires the GSP mapping of the method buffer.
+           Clear the handle only on success so failed cleanup is retryable. */
+        release[2]=c->Channel;
+        if(!NvxGspCall(dev,10,release,sizeof(release))) goto unsafe;
+        LogStr("NVX [GR-CLIENT]: channel FREE acknowledged handle=");
+        LogHex(c->Channel);LogStr(" chid=");LogHex(c->HardwareChannelId);
+        LogStr("\n");
+        c->Channel=0;
     }
     if(c->TsgAllocated) {
         release[2]=c->Tsg;
