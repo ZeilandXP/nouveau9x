@@ -236,6 +236,7 @@ NvxQueryBridgeStatus(struct nvx_bridge_status *status, DWORD bytes)
    return TRUE;
 }
 
+void nvx_wgl_process_detach(void);
 void nvx_wgl_set_hdc(HDC hdc);
 int nvx_wgl_xf86drm_fd(void);
 int nvx_wgl_nouveau_device_available(void);
@@ -2181,4 +2182,16 @@ done:
    nvx_free(hdc, vbo_result.BufferId);
    nvx_free(hdc, target_result.BufferId);
    return ok;
+}
+
+/* Called only for process termination, before win32k releases process DCs.
+ * The drawable DC may already have been released by the application. */
+void
+nvx_wgl_process_detach(void)
+{
+   HDC transport = GetDC(NULL);
+   if (transport) {
+      NvxXf86DrmCloseProcessClients(transport);
+      ReleaseDC(NULL, transport);
+   }
 }

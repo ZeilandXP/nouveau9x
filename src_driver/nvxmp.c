@@ -2243,7 +2243,8 @@ BOOLEAN NTAPI HwVidStartIO(
         Nvx3dUnlockBuffers();
         status=found&&!busy?NO_ERROR:ERROR_BUSY;
         if(status==NO_ERROR)
-            LogStr("NVX [3D-SESSION]: closed client session.\n");
+            { LogStr("NVX [3D-SESSION]: closed client token=");
+              LogHex(request.ClientToken);LogStr("\n"); }
         break;
     }
 

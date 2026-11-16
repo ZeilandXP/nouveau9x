@@ -1,0 +1,10 @@
+diff --git a/src/gallium/targets/wgl/wgl.c b/src/gallium/targets/wgl/wgl.c
+--- a/src/gallium/targets/wgl/wgl.c
++++ b/src/gallium/targets/wgl/wgl.c
+@@ -302,1 +302,2 @@
+    case DLL_PROCESS_DETACH:
++      extern void nvx_wgl_process_detach(void);
+@@ -306,2 +307,3 @@
+          stw_cleanup();
+       } else {
++         nvx_wgl_process_detach();

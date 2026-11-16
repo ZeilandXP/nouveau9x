@@ -1912,6 +1912,28 @@ NvxXf86DrmRegisterDevice(const NVX_WINSYS_DEVICE *device)
    return fd;
 }
 
+/* Process termination only: other threads may have died holding our table
+ * or BO-pool locks. Close kernel sessions directly, without Mesa teardown. */
+void
+NvxXf86DrmCloseProcessClients(void *transport)
+{
+   unsigned i;
+   for (i = 0; i < NVX_DRM_DEVICE_SLOTS; i++) {
+      NVX_WINSYS_DEVICE *device = &nvx_drm_devices[i].device;
+      NVX_3D_CLIENT_SESSION request;
+      if (!nvx_drm_devices[i].fd || !device->ClientToken || !device->escape)
+         continue;
+      memset(&request, 0, sizeof(request));
+      request.Size = sizeof(request);
+      request.Version = NVX_3D_ABI_VERSION;
+      request.Operation = NVX_3D_CLIENT_CLOSE;
+      request.ClientToken = device->ClientToken;
+      if (device->escape(transport, NVX_ESCAPE_3D_CLIENT_CLOSE,
+                         sizeof(request), &request, 0, NULL))
+         device->ClientToken = 0;
+   }
+}
+
 void
 NvxXf86DrmUnregisterDevice(int fd)
 {

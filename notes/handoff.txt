@@ -1,6 +1,20 @@
 # Phase 2C handoff: Windows XP x64 OpenGL on GA104
 
-Updated November 15, 2026 after the single .211 hardware run. Fresh channel recreation and FB P2MF probe pass; NV170 gears completes 129 frames in six seconds without logged submission stalls. Later cube still falls back to software after channel acquisition fails; full hardware OpenGL suite remains incomplete.
+Updated November 15, 2026 after .212: normal process-exit ICD session close now releases the gears lease and allows the following cube to create a Nouveau channel. Gears reports 139 frames in six seconds. The cube still times out at its initial completion fence; its OPENGL_RESULT RENDERED marker is not proof of hardware rendering.
+
+## .212 candidate: close ICD kernel sessions on normal process exit
+
+- Mesa WGL skips full screen destruction during DLL_PROCESS_DETACH on process termination. Linux would close the DRM fd automatically; the NVX pseudo-fd previously had no equivalent, so the ICD client token could retain the exclusive lease after gears exited.
+- New external patch 0032 calls a narrow termination hook. It closes registered DRM kernel client sessions directly without acquiring BO-pool/device-table locks or destroying Mesa screens. Uses a fresh display DC because the original window DC may already have been released.
+- Kernel close diagnostics now include the exact token, allowing the ICD session to be distinguished from the benchmark helper session.
+- Host checks, fresh Mesa/driver build and XP import audit pass. One VFIO run: test_logs/v3.0.0.212-20261115-204447.log.
+- Cleanup confirmed: helper token 0x29c4296600000004 closes, then actual ICD token 0x659e652000000006 closes on process termination. The following cube gets a freshly verified channel (third successful renewal). Original lease leak resolved for normal ExitProcess.
+- Gears: GL_RENDERER NV170, 139 frames / 6 seconds (23.167 FPS). This remains application progress, not independent pixel verification.
+- Remaining blocker: cube initial batch fence 0x1901 never releases; GP_GET=GP_PUT=2, PB_GET=PB_PUT=0x11c1146c (end of submitted buffer, dword 0x51b). Channel quarantines; subsequent submissions reject. This differs from the earlier inline P2MF stop. No new firmware assertions beyond boot baseline 1.
+- TEST FALSE POSITIVE: cube nevertheless emits OPENGL_RESULT RENDERED and reports 300 frames / 5.306s (56.5 FPS). Do not accept this as hardware success while fences fail. Strengthen result criteria using native submission failures/completed fences and render-target pixel verification; bridge gpu_batches counters alone do not track the native Nouveau path reliably.
+- Fresh-channel boot probes log triangle readback mismatches although semaphore/channel verification succeeds. Keep that limitation visible when interpreting GR-LIFETIME messages.
+- Final run: script exits 0 because its renderer/frame criterion accepts RENDERED; this is a false positive in the presence of the logged fence timeout. FB P2MF probe and boot GR controls remain separate checks. Busy buffers from the quarantined cube remain retained, as expected for unconfirmed GPU completion. VM session was ended by the bounded runner; graceful guest shutdown is not established.
+- Scope: normal ExitProcess/DLL termination. Forced process kill and loader-lock interaction still need a kernel-managed cleanup design. Paused after exactly one .212 hardware run.
 
 ## .211 tested: upstream stop/evict and global context lifetime
 
@@ -40,8 +54,8 @@ Updated November 15, 2026 after the single .211 hardware run. Fresh channel recr
 
 ## Latest Run & Artifacts
 
-- **Latest VFIO Serial Log**: `test_logs/v3.0.0.211-20261115-203011.log`
-- **Latest hardware-tested version**: `v3.0.0.211`
+- **Latest VFIO Serial Log**: `test_logs/v3.0.0.212-20261115-204447.log`
+- **Latest hardware-tested version**: `v3.0.0.212`
 - **Current state**: `.208` sends `NO_MAP | NONCONTIGUOUS | VIDMEM` (`0x40000210`) for FB page-list registration. Hardware accepted the registration and the isolated P2MF transfer passed.
 - **Target Hardware**: NVIDIA GeForce RTX 3070 (GA104, PCI `10de:2488`, Ampere arch `NV170`, 8 GB VRAM) under QEMU/KVM VFIO on Windows XP Professional x64 Edition (NT 5.2).
 

@@ -55,6 +55,7 @@ PY
 restore_mesa_sources() {
     rm -f "$ROOT/mesa/src/gallium/winsys/nouveau/drm/nvx_xf86drm.c"
     for patch_file in \
+        "$ROOT/mesa_patches/0032-nouveau-xp-process-session-close.patch" \
         "$ROOT/mesa_patches/0031-nouveau-xp-use-m2mf-linear-copy.patch" \
         "$ROOT/mesa_patches/0030-nouveau-xp-direct-linear-transfer-map.patch" \
         "$ROOT/mesa_patches/0029-nouveau-zero-cb-sample-locations.patch" \

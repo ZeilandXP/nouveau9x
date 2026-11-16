@@ -113,6 +113,7 @@ typedef struct NVX_XF86DRM_STATUS {
  * create a Nouveau channel or authorize GPU commands. */
 int NvxXf86DrmRegisterDevice(const NVX_WINSYS_DEVICE *device);
 void NvxXf86DrmUnregisterDevice(int fd);
+void NvxXf86DrmCloseProcessClients(void *transport);
 int NvxXf86DrmIsRegistered(int fd);
 void NvxXf86DrmGetStatus(NVX_XF86DRM_STATUS *status);
 #if defined(_WIN32) || defined(_WIN64)
