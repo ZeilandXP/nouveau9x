@@ -112,6 +112,14 @@ locked until reset and ACR load will fail.
 
 ## Next: stage 3
 
+Size of the job, measured by linking `build/w64/libnvkm.a` and
+`build/w32/libnvkm.a` whole with nothing else: the only unresolved symbols
+are the shim's backend functions (about 25: locks, events, allocation, time,
+log, `ioremap`, DMA pages, `request_irq`, PCI config), `memcpy`/`memset`/
+`memcmp`, libgcc's 64-bit division and bit-count helpers (x86 mostly), and
+the three `nvif_driver_*` tables the port must supply for its nvif client.
+The x64 archive is about 4 MiB before dead-code elimination.
+
 1. `lkpi/nt/lkpi_nt.c`: spinlocks on `KSPIN_LOCK`, mutexes on `KMUTEX`,
    events on `KEVENT`, pool allocation, `MmMapIoSpace`,
    `MmAllocateContiguousMemory` for DMA, a system worker thread, and
