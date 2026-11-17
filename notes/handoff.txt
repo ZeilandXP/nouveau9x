@@ -17,10 +17,38 @@ desktops in `winxp_x64.qcow2`. The x86 `nvxogl32.dll`, `d3d9.dll`, and
 `wined3d.dll` are present in `WINDOWS/SysWOW64`; the OpenGL hardware route is
 verified by x86 gears. The automatic Startup benchmark was disabled (the
 batch is retained as `run_accel_test.bat.disabled`) so the desktop is usable.
-3DMark itself has not been run. It is a 32-bit Direct3D 9 workload, and its
-hardware route through WineD3D to the Nouveau WGL ICD remains unverified; the
-existing 64-bit D3D9 smoke test crashes, so do not count 3DMark acceleration as
-proven until its renderer/result is checked in the guest.
+3DMark05 is a 32-bit Direct3D 9 workload. The user's latest run reached the
+benchmark but showed near-zero FPS and black screens; its D3D renderer and
+hardware acceleration are still unverified. The existing 64-bit D3D9 smoke
+test crashes, so do not count the WineD3D-to-Nouveau route as working until
+3DMark's renderer/result is captured.
+
+### User's 3DMark run and black-screen failure
+
+The user reports 3DMark ran for a while at nearly 0 FPS, then both displays
+went black. The live `vm_serial.log` captured repeated 64.5 MiB allocation
+failures: the available framebuffer heap was exhausted and GART reservations
+for the same size also failed (for example, lines 10384-10394 and 10546-10556).
+This is a credible source of resource churn / poor D3D performance, though the
+serial log does not measure 3DMark FPS or prove which failed allocation stopped
+its frames.
+
+The black screen has a direct display-path failure in the log: VBE mode reset
+released the native display channels (line 10848), the VBE SET_MODE returned
+0x57 (line 10858), and the subsequent RM allocation RPC function 103 timed out
+(line 10868). Channel bring-up then reported “no head update submitted” and
+“display channel initialization failed” (lines 10870-10871); another mode
+attempt failed at line 10985. This sequence is consistent with a 3DMark
+full-screen mode change leaving scanout dark. The log has no queued MMU fault
+and no NVC0 batch/fence failure, so it does not point to a demonstrated GR
+engine hang. Keep the QEMU session running until the user chooses to shut it
+down; the VM was still active at inspection.
+
+Next: fix native display-channel survival/reinitialization across VBE/fullscreen
+modesets and provide a safe fallback that cannot leave scanout black. Separately
+investigate VRAM/GART placement and release for the repeated 64.5 MiB BOs, then
+capture 3DMark's actual D3D renderer and per-test output. A successful x86 WGL
+gears run alone does not prove the WineD3D D3D9 route is hardware accelerated.
 
 ## Current verified status
 
@@ -106,11 +134,11 @@ PTE encoding and kernel ownership; Nouveau generates OpenGL draw/target state.
    coherency correctness while optimizing. Captures and first-48 range sample
    readbacks themselves add diagnostic overhead; current FPS is not a clean
    production benchmark. Fine-grained changed runs may issue many small uploads.
-2. **Direct3D / 3DMark05:** the x86 WGL ICD and x86 WineD3D runtime are now
-   installed and x86 WGL hardware rendering is verified. 3DMark05 itself has
-   not been run. Verify its 32-bit D3D9-to-WineD3D-to-WGL path and capture the
-   renderer and benchmark result; the existing 64-bit D3D9 smoke test crashes
-   with 0xC0000005, so a successful WGL gears run does not establish D3D9 works.
+2. **Direct3D / 3DMark05:** x86 WGL hardware rendering is verified, but the
+   user's 3DMark05 run reported near-zero FPS and then black screens. Verify
+   its 32-bit D3D9-to-WineD3D-to-WGL renderer and repair the mode-set and large
+   allocation failures above. The existing 64-bit D3D9 smoke test crashes with
+   0xC0000005; a successful WGL gears run does not establish D3D9 works.
 3. **WineD3D identity / crash:** D3D9 loads and creates IDirect3D9, identifies its adapter as GTX
    470/nv4_disp.dll, then the 64-bit test crashes (0xC0000005). Trace the failing
    D3D caps/device call and collect a crash address/stack. The adapter name is
