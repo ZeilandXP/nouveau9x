@@ -50,7 +50,8 @@ $(eval $(call nvkm_target,w64,$(CC),-m64,x86_64-w64-mingw32-ar))
 $(eval $(call nvkm_target,w32,$(CC32),-m32,i686-w64-mingw32-ar))
 
 # Host backend + tests. host_os.c is the only file that sees the C library.
-HOST_BACKEND = $(BUILD)/asan/lkpi/host/lkpi_host.o $(BUILD)/asan/host_os.o
+HOST_BACKEND = $(BUILD)/asan/lkpi/host/lkpi_host.o $(BUILD)/asan/lkpi/host/hw_mock.o \
+               $(BUILD)/asan/host_os.o
 $(BUILD)/asan/host_os.o: lkpi/host/host_os.c lkpi/host/host_os.h
 	@mkdir -p $(@D)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g $(SANITIZE) -c $< -o $@
@@ -60,11 +61,35 @@ $(BUILD)/asan/tests/%.o: tests/%.c lkpi/include/lkpi.h lkpi/host/lkpi_host.h
 $(BUILD)/asan/lkpi_test: $(BUILD)/asan/tests/lkpi_test.o $(BUILD)/asan/lkpi/lkpi_string.o \
                          $(BUILD)/asan/lkpi/lkpi_core.o $(HOST_BACKEND)
 	$(HOSTCC) $(SANITIZE) -o $@ $^
-$(BUILD)/asan/nvkm_host_test: $(BUILD)/asan/tests/nvkm_host_test.o $(HOST_BACKEND) $(BUILD)/asan/libnvkm.a
+$(BUILD)/asan/nvkm_host_test: $(BUILD)/asan/tests/nvkm_host_test.o $(BUILD)/asan/tools/nvkm_bringup.o \
+                              $(HOST_BACKEND) $(BUILD)/asan/libnvkm.a
 	$(HOSTCC) $(SANITIZE) -Wl,--gc-sections -o $@ $^
 
+# nvkm_vfio: the same nvkm + shim against a real card bound to vfio-pci on a
+# Linux host. See tools/nvkm_vfio.c.
+VFIO_OBJS = $(BUILD)/host/tools/nvkm_vfio.o $(BUILD)/host/tools/nvkm_bringup.o \
+            $(BUILD)/host/lkpi/host/lkpi_host.o \
+            $(BUILD)/host/lkpi/host/hw_vfio.o $(BUILD)/host/nvx_chip.o \
+            $(BUILD)/host/host_os.o $(BUILD)/host/vfio_os.o
+$(BUILD)/host/tools/%.o: tools/%.c tools/nvkm_bringup.h lkpi/include/lkpi.h lkpi/host/hw_vfio.h nvx_chip.h
+	@mkdir -p $(@D)
+	$(HOSTCC) $(NVKM_CFLAGS) -Wextra -Wno-unused-parameter -Wno-sign-compare -g -c $< -o $@
+$(BUILD)/asan/tools/%.o: tools/%.c tools/nvkm_bringup.h lkpi/include/lkpi.h
+	@mkdir -p $(@D)
+	$(HOSTCC) $(NVKM_CFLAGS) -Wextra -Wno-unused-parameter -Wno-sign-compare -g -O1 $(SANITIZE) -c $< -o $@
+$(BUILD)/host/nvx_chip.o: nvx_chip.c nvx_chip.h nvx_pascal_ids.h
+	@mkdir -p $(@D)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -O2 -c $< -o $@
+$(BUILD)/host/%_os.o: lkpi/host/%_os.c lkpi/host/host_os.h lkpi/host/vfio_os.h
+	@mkdir -p $(@D)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -O2 -c $< -o $@
+$(BUILD)/host/nvkm_vfio: $(VFIO_OBJS) $(BUILD)/host/libnvkm.a
+	$(HOSTCC) -Wl,--gc-sections -o $@ $^
+.PHONY: nvkm-vfio
+nvkm-vfio: nouveau-present $(BUILD)/host/nvkm_vfio
+
 .PHONY: check-nvkm
-check-nvkm: nouveau-present $(BUILD)/asan/lkpi_test $(BUILD)/asan/nvkm_host_test
+check-nvkm: nouveau-present $(BUILD)/asan/lkpi_test $(BUILD)/asan/nvkm_host_test nvkm-vfio
 	$(BUILD)/asan/lkpi_test
 	$(BUILD)/asan/nvkm_host_test
 

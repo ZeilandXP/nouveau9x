@@ -18,7 +18,7 @@ under VFIO passthrough first.
 | Stage | What | State |
 | :-- | :-- | :-- |
 | 1 | Fork, strip GSP/OpenRM, Pascal identification, BIOS (VBE) scanout, CPU 2D | Builds and passes host tests; **not yet run on hardware** |
-| 2 | Linux-API shim + nvkm host harness | In progress — see `notes/PASCAL_PORT.md` |
+| 2 | Linux-API shim + nvkm host harness | nvkm builds for host/x64/x86 and its probe path passes on a mock card; the VFIO runner for a real card is written but **untested** |
 | 3 | nvkm subdevs inside the miniport (VBIOS, FB, MMU, I2C/AUX, therm) | Not started |
 | 4 | Native display (EVO core channel `0x987d`), dual head | Not started |
 | 5 | FIFO + copy-engine 2D (`0xc1b5`) | Not started |
@@ -46,9 +46,13 @@ src_driver/      Video miniport (nvxmp.sys / nvxmp32.sys)
   nvx_log.c        COM1 + ring + C:\WINDOWS\nvxmp.log diagnostics
   nvx_3d_abi.h     User/kernel 3D ABI shared with the display driver and Mesa
   lkpi/            Linux kernel API shim that nvkm is compiled against
-  tools/           PCI-ID/INF generator, PE import audit
+    host/            backends for running nvkm as a Linux process (mock card, VFIO)
+  nvkm.mk          builds nouveau's nvkm + nvif into libnvkm.a per target
+  tools/           PCI-ID/INF generator, PE import audit, nvkm_vfio runner
   tests/           Host tests (no Windows or GPU needed)
-nouveau/         Pinned nouveau sources (fetched by script, not committed)
+nouveau/         Pinned nouveau sources (fetched by tools/fetch_nouveau.sh, not committed)
+nouveau_patches/ The few changes made to nouveau, as patches
+tools/           fetch_nouveau.sh
 src_disp/        XDDM GDI display driver (nvxdisp.dll), unchanged from upstream
 src_win98/       Windows 98 VxD + 16-bit display driver (still upstream/RTX; stage 8)
 mesa_patches/    XP shims and NVC0 winsys for Mesa (still upstream/RTX; stage 7)
@@ -66,10 +70,16 @@ sudo apt-get install build-essential gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 bin
 ```
 
 ```sh
+./tools/fetch_nouveau.sh    # pinned nouveau sources (Linux v6.6), once
 make -C src_driver all      # nvxmp.sys (x64) and nvxmp32.sys (x86)
-make -C src_driver check    # host tests + PE import audit
+make -C src_driver check    # host tests, PE import audit, nvkm on a mock card
 make -C src_disp nvxdisp.dll nvxdisp32.dll
 ```
+
+The miniport does not link nvkm yet; `make -C src_driver nvkm-all` builds
+the libraries it will link, and `make -C src_driver nvkm-vfio` builds a
+Linux program that runs the same code against a real card (see
+`notes/PASCAL_PORT.md`).
 
 Package for XP x64: copy `src_driver/nvxmp.sys` and `src_disp/nvxdisp.dll` next
 to `dist_full/nvx.inf`. For XP x86: copy `nvxmp32.sys` as `nvxmp.sys` and

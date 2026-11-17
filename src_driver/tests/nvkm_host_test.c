@@ -6,6 +6,7 @@
 #include <core/subdev.h>
 #include <subdev/bios.h>
 #include "../lkpi/host/lkpi_host.h"
+#include "../tools/nvkm_bringup.h"
 
 #define CHECK(cond) do { if (!(cond)) { \
     lkpi_printk(0, "nvkm_host_test: FAILED %s (line %d)\n", #cond, __LINE__); \
@@ -66,6 +67,41 @@ static void make_vbios(u8 *rom)
     memcpy(rom + 0x200, version, 5);
     for (i = 0; i < ROM_SIZE - 1; i++) sum = (u8)(sum + rom[i]);
     rom[ROM_SIZE - 1] = (u8)(0 - sum);
+}
+
+/* Captures the summary lines the bring-up sequence prints. */
+static char g_log[8192];
+static size_t g_log_len;
+static void capture(int level, const char *text)
+{
+    size_t n = strlen(text);
+    (void)level;
+    if (g_log_len + n < sizeof(g_log)) { memcpy(g_log + g_log_len, text, n + 1); g_log_len += n; }
+}
+static bool logged(const char *needle)
+{
+    size_t n = strlen(needle), i;
+    for (i = 0; i + n <= g_log_len; i++)
+        if (!memcmp(g_log + i, needle, n)) return true;
+    return false;
+}
+
+/* Stands in for the file system: only two firmware files "exist". */
+static int fake_read_file(const char *path, void **data, size_t *size)
+{
+    static const char *const present[] = {
+        "/fw/nvidia/gp104/acr/bl.bin", "/fw/nvidia/gp104/gr/fecs_sig.bin",
+        "/fw/nvidia/gp104/sec2/image.bin.zst",      /* compressed: must not count */
+    };
+    unsigned int i;
+    for (i = 0; i < ARRAY_SIZE(present); i++) {
+        if (!strcmp(path, present[i])) {
+            *size = 16;
+            *data = lkpi_alloc(*size, true);
+            return *data ? 0 : -1;
+        }
+    }
+    return -1;
 }
 
 static unsigned int count_subdevs(struct nvkm_device *device)
@@ -136,6 +172,37 @@ int main(void)
     CHECK(count_subdevs(device) == 32);
     nvkm_device_del(&device);
     CHECK(device == NULL);
+
+    /* 3. The bring-up sequence used by the VFIO runner. Probe only: a
+     *    summary is printed and everything is torn down. */
+    lkpi_host_verbosity = 2;
+    lkpi_host_log_hook = capture;
+    CHECK(nvx_bringup(&pdev, NULL, NULL, true) == 0);
+    CHECK(logged("chipset : GP104 (0x134 rev a1)"));
+    CHECK(logged("vbios   : 86.04.50.00.70, 8192 bytes"));
+    CHECK(logged("gr no (no firmware)") && logged("disp yes"));
+    CHECK(!logged("nvkm_device_init"));
+
+    /* 4. Full initialisation needs real VBIOS tables and real registers; on
+     *    the synthetic ROM nouveau stops in devinit. The failure must be
+     *    reported and leave nothing behind (LeakSanitizer checks the latter). */
+    g_log_len = 0;
+    CHECK(nvx_bringup(&pdev, NULL, NULL, false) == -EINVAL);
+    CHECK(logged("nvkm_device_init -> -22") && !logged("nvkm_device_fini"));
+
+    /* 5. Firmware discovery: names are registered as nouveau asks for them;
+     *    a file that exists only compressed is reported, not loaded. */
+    g_log_len = 0;
+    CHECK(nvx_load_firmware("/fw", "GP104", fake_read_file) == 2);
+    CHECK(logged("2 of 23 files loaded from /fw/nvidia/gp104"));
+    CHECK(logged("1 files exist only compressed"));
+    {
+        const struct firmware *fw = NULL;
+        CHECK(!request_firmware(&fw, "nvidia/gp104/acr/bl.bin", NULL) && fw->size == 16);
+        release_firmware(fw);
+        CHECK(request_firmware(&fw, "nvidia/gp104/sec2/image.bin", NULL) == -ENOENT);
+    }
+    lkpi_host_log_hook = NULL;
 
     lkpi_free(bar0);
     lkpi_printk(0, "nvkm_host_test: ok\n");

@@ -4,6 +4,12 @@
 #include <lkpi.h>
 #include <lkpi_backend.h>
 
+/* Implemented by the hardware side (hw_mock.c or hw_vfio.c): called
+ * whenever nvkm sleeps, so pending device interrupts can be delivered. */
+void lkpi_host_hw_idle(void);
+void lkpi_host_log_reset(void);
+
+/* ---- hw_mock.c only ---- */
 /* Make [phys, phys+size) resolve to 'mem' for ioremap(). */
 void lkpi_host_add_region(phys_addr_t phys, size_t size, void *mem);
 void lkpi_host_reset(void);                 /* forget regions, IRQ, config space, counters */
