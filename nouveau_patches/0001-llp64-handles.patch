@@ -1,0 +1,41 @@
+nouveau: keep object handles and mapping handles pointer-sized on LLP64
+
+nvif identifies client objects by their address (nvif_handle) and passes
+mapped kernel addresses through u64 handles, casting via 'unsigned long'
+in both places. On Windows x64 long is 32 bits, so addresses would be
+truncated: object lookups could collide and mapped pointers would be
+wrong. Use uintptr_t, which is the same type as unsigned long on Linux.
+
+--- a/nvkm/subdev/mmu/umem.c	2026-11-17 03:39:19.439432256 +0000
++++ b/nvkm/subdev/mmu/umem.c	2026-11-17 03:39:19.461366749 +0000
+@@ -99,7 +99,7 @@
+ 		if (ret)
+ 			return ret;
+ 
+-		*handle = (unsigned long)(void *)umem->map;
++		*handle = (uintptr_t)(void *)umem->map;
+ 		*length = nvkm_memory_size(umem->memory);
+ 		*type = NVKM_OBJECT_MAP_VA;
+ 		return 0;
+--- a/nvif/object.c	2026-11-17 03:39:19.448140944 +0000
++++ b/nvif/object.c	2026-11-17 03:39:19.462927355 +0000
+@@ -232,7 +232,7 @@
+ 				return 0;
+ 			}
+ 		} else {
+-			object->map.ptr = (void *)(unsigned long)handle;
++			object->map.ptr = (void *)(uintptr_t)handle;
+ 			return 0;
+ 		}
+ 		nvif_object_unmap_handle(object);
+--- a/include/nvif/object.h	2026-11-17 03:40:35.799005487 +0000
++++ b/include/nvif/object.h	2026-11-17 03:40:35.800676235 +0000
+@@ -43,7 +43,7 @@
+ int  nvif_object_map(struct nvif_object *, void *, u32);
+ void nvif_object_unmap(struct nvif_object *);
+ 
+-#define nvif_handle(a) (unsigned long)(void *)(a)
++#define nvif_handle(a) (uintptr_t)(void *)(a)
+ #define nvif_object(a) (a)->object
+ 
+ #define nvif_rd(a,f,b,c) ({                                                    \

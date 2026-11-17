@@ -18,6 +18,8 @@ LDFLAGS32 = $(LINK) -Wl,--entry=_DriverEntry@8 -Wl,--subsystem,native:5.1 -lvide
 
 all: nvxmp.sys nvxmp32.sys
 
+include nvkm.mk
+
 nvxmp.sys: $(SOURCES) $(HEADERS) nvxmp.def libvideoprt.a
 	$(CC) $(CFLAGS) -o $@ $(SOURCES) nvxmp.def $(LDFLAGS)
 
@@ -32,13 +34,16 @@ libvideoprt.a: videoprt.def
 
 clean:
 	rm -f nvxmp.sys nvxmp32.sys libvideoprt.a
+	rm -rf $(BUILD)/host $(BUILD)/asan $(BUILD)/w64 $(BUILD)/w32
 
 HOSTFLAGS = -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
             -DNVX_HOST_TEST -I. -Itests
-BUILD ?= /tmp/nvx-host-tests
 
-.PHONY: check
-check: all
+# 'check' needs ../nouveau (see ../tools/fetch_nouveau.sh); 'check-driver'
+# covers everything that does not involve nvkm.
+.PHONY: check check-driver
+check: check-driver check-nvkm
+check-driver: all
 	python3 tools/gen_pascal_ids.py --check
 	mkdir -p $(BUILD)
 	$(HOSTCC) $(HOSTFLAGS) -o $(BUILD)/chip tests/chip_test.c nvx_chip.c
