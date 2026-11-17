@@ -1,130 +1,52 @@
 .DEFAULT_GOAL := all
 CC = x86_64-w64-mingw32-gcc
 CC32 = i686-w64-mingw32-gcc
-EXPERIMENTAL_GSP ?= 0
-UNSAFE_GSP_PROBE ?= 0
-NVX_ENABLE_GR_CHANNEL_PROBE ?= 1
-NVX_ENABLE_GR_PROMOTE_PROBE ?= 1
-NVX_ENABLE_GR_SUBMISSION_PROBE ?= 0
-NVX_ENABLE_GR_UNPRIVILEGED_CONTEXT_PROBE ?= 0
-OPEN_GPU_DIR = ../open-gpu-kernel-modules
-OPENRM_CONTAINERS = $(OPEN_GPU_DIR)/src/nvidia/src/libraries/containers/eheap/eheap_old.c $(OPEN_GPU_DIR)/src/nvidia/src/libraries/containers/btree/btree.c
-OPENRM_CONTAINER_HEADERS = $(wildcard openrm_xp/*.h openrm_xp/*/*.h) $(OPEN_GPU_DIR)/src/nvidia/inc/libraries/containers/eheap_old.h $(OPEN_GPU_DIR)/src/nvidia/inc/libraries/containers/btree.h
-OPENRM_POLICY = nvx_openrm_policy.c nvx_openrm_policy_generated.c
-OPENRM_POLICY_INPUTS = $(OPEN_GPU_DIR)/src/nvidia/src/kernel/gpu/mmu/arch/turing/kern_gmmu_tu102.c $(OPEN_GPU_DIR)/src/nvidia/src/kernel/gpu/mmu/arch/ampere/kern_gmmu_ga100.c $(OPEN_GPU_DIR)/src/nvidia/generated/g_kernel_channel_nvoc.h tools/import_openrm_policy.py $(OPEN_GPU_DIR)/src/nvidia/src/kernel/gpu/fifo/arch/ampere/kernel_fifo_ga100.c $(OPEN_GPU_DIR)/src/nvidia/src/kernel/gpu/fifo/arch/turing/kernel_fifo_tu102.c $(OPEN_GPU_DIR)/src/nvidia/src/kernel/gpu/gr/kernel_graphics_context.c
-OPENRM_CONTAINER_FLAGS = -Iopenrm_xp -I$(OPEN_GPU_DIR)/src/nvidia/inc -I$(OPEN_GPU_DIR)/src/nvidia/inc/libraries
-CFLAGS = -DNVX_ENABLE_EXPERIMENTAL_GSP=$(EXPERIMENTAL_GSP) -DNVX_ENABLE_UNSAFE_GSP_PROBE=$(UNSAFE_GSP_PROBE) -DNVX_ENABLE_GR_CHANNEL_PROBE=$(NVX_ENABLE_GR_CHANNEL_PROBE) -DNVX_ENABLE_GR_PROMOTE_PROBE=$(NVX_ENABLE_GR_PROMOTE_PROBE) -DNVX_ENABLE_GR_SUBMISSION_PROBE=$(NVX_ENABLE_GR_SUBMISSION_PROBE) -DNVX_ENABLE_GR_UNPRIVILEGED_CONTEXT_PROBE=$(NVX_ENABLE_GR_UNPRIVILEGED_CONTEXT_PROBE) -Wall -Wextra -O2 -nostdlib -m64 -fno-builtin -fno-stack-protector $(OPENRM_CONTAINER_FLAGS) -I. -Iinclude -I$(OPEN_GPU_DIR)/src/common/sdk/nvidia/inc -I$(OPEN_GPU_DIR)/src/common/inc -I$(OPEN_GPU_DIR)/src/nvidia/arch/nvalloc/common/inc -I$(OPEN_GPU_DIR)/src/common/shared/msgq/inc
-CFLAGS32 = -DNVX_ENABLE_EXPERIMENTAL_GSP=$(EXPERIMENTAL_GSP) -DNVX_ENABLE_UNSAFE_GSP_PROBE=$(UNSAFE_GSP_PROBE) -DNVX_ENABLE_GR_CHANNEL_PROBE=$(NVX_ENABLE_GR_CHANNEL_PROBE) -DNVX_ENABLE_GR_PROMOTE_PROBE=$(NVX_ENABLE_GR_PROMOTE_PROBE) -DNVX_ENABLE_GR_SUBMISSION_PROBE=$(NVX_ENABLE_GR_SUBMISSION_PROBE) -DNVX_ENABLE_GR_UNPRIVILEGED_CONTEXT_PROBE=$(NVX_ENABLE_GR_UNPRIVILEGED_CONTEXT_PROBE) -Wall -Wextra -O2 -nostdlib -m32 -fno-builtin -fno-stack-protector $(OPENRM_CONTAINER_FLAGS) -I. -Iinclude -I$(OPEN_GPU_DIR)/src/common/sdk/nvidia/inc -I$(OPEN_GPU_DIR)/src/common/inc -I$(OPEN_GPU_DIR)/src/nvidia/arch/nvalloc/common/inc -I$(OPEN_GPU_DIR)/src/common/shared/msgq/inc
-LDFLAGS = -shared -Wl,--entry=DriverEntry -Wl,--subsystem,native:5.2 -nostartfiles -Wl,--image-base,0x10000 -Wl,--file-alignment,0x200 -Wl,--section-alignment,0x1000 -L. -lvideoprt -lntoskrnl
-LDFLAGS32 = -shared -Wl,--entry=_DriverEntry@8 -Wl,--subsystem,native:5.1 -nostartfiles -Wl,--image-base,0x10000 -Wl,--file-alignment,0x200 -Wl,--section-alignment,0x1000 -lvideoprt -lntoskrnl -lgcc
+HOSTCC ?= cc
 
-nvx_openrm_policy_generated.c nvx_openrm_channel_flags_generated.h &: $(OPENRM_POLICY_INPUTS)
-	python3 tools/import_openrm_policy.py $(OPEN_GPU_DIR) nvx_openrm_policy_generated.c
+SOURCES = nvxmp.c nvx_log.c nvx_vbe.c nvx_chip.c nvx_swblt.c
+HEADERS = miniport.h nvx_device.h nvx_log.h nvx_vbe.h nvx_chip.h nvx_swblt.h \
+          nvx_pascal_ids.h nvx_3d_abi.h nvx_nvc0_address_pairs.h
+
+COMMON = -Wall -Wextra -O2 -nostdlib -fno-builtin -fno-stack-protector \
+         -fno-strict-aliasing -I.
+CFLAGS = $(COMMON) -m64
+CFLAGS32 = $(COMMON) -m32
+LINK = -shared -nostartfiles -Wl,--image-base,0x10000 \
+       -Wl,--file-alignment,0x200 -Wl,--section-alignment,0x1000
+LDFLAGS = $(LINK) -Wl,--entry=DriverEntry -Wl,--subsystem,native:5.2 -L. -lvideoprt -lntoskrnl
+LDFLAGS32 = $(LINK) -Wl,--entry=_DriverEntry@8 -Wl,--subsystem,native:5.1 -lvideoprt -lntoskrnl -lgcc
 
 all: nvxmp.sys nvxmp32.sys
 
-.PHONY: FORCE
-FORCE:
+nvxmp.sys: $(SOURCES) $(HEADERS) nvxmp.def libvideoprt.a
+	$(CC) $(CFLAGS) -o $@ $(SOURCES) nvxmp.def $(LDFLAGS)
 
-nvxmp.sys: FORCE
-nvxmp32.sys: FORCE
-
-gsp_blob.o: ../dist_full/gsp_ga104.bin
-	cd .. && x86_64-w64-mingw32-objcopy -I binary -O pe-x86-64 -B i386:x86-64 dist_full/gsp_ga104.bin src_driver/gsp_blob.o
-
-gsp_blob32.o: ../dist_full/gsp_ga104.bin
-	cd .. && i686-w64-mingw32-objcopy -I binary -O pe-i386 -B i386 dist_full/gsp_ga104.bin src_driver/gsp_blob32.o
-	i686-w64-mingw32-objcopy --redefine-sym _binary_dist_full_gsp_ga104_bin_start=__binary_dist_full_gsp_ga104_bin_start --redefine-sym _binary_dist_full_gsp_ga104_bin_end=__binary_dist_full_gsp_ga104_bin_end gsp_blob32.o
-
-nvxmp.sys: nvxmp.c nvx_gsp.c nvx_gr_clients.c nvx_gr_context.c nvx_gr_context.h nvx_mmu.c nvx_mmu.h nvx_vbe.c nvx_vbe.h nvx_fw.c nvx_fw.h nvx_vbios.c nvx_vbios.h nvx_gsp.h nvx_openrm_shim.c nvx_openrm_containers.c $(OPENRM_POLICY) $(OPENRM_CONTAINERS) $(OPENRM_CONTAINER_HEADERS) nvx_openrm_channel_flags_generated.h nvx_openrm_policy_view.h nvx_openrm_shim.h miniport.h bootloader_blob.h booter_load_blob.h gsp_blob.o nvxmp.def libvideoprt.a $(OPEN_GPU_DIR)/src/common/shared/msgq/msgq.c
-	$(CC) $(CFLAGS) -o $@ nvxmp.c nvx_gsp.c nvx_gr_context.c nvx_mmu.c nvx_vbe.c nvx_fw.c nvx_vbios.c nvx_rpc.c nvx_seq.c nvx_openrm_shim.c nvx_openrm_containers.c $(OPENRM_POLICY) $(OPENRM_CONTAINERS) $(OPEN_GPU_DIR)/src/common/shared/msgq/msgq.c gsp_blob.o nvxmp.def $(LDFLAGS)
-
-nvxmp32.sys: nvxmp.c nvx_gsp.c nvx_gr_clients.c nvx_gr_context.c nvx_gr_context.h nvx_mmu.c nvx_mmu.h nvx_vbe.c nvx_vbe.h nvx_fw.c nvx_fw.h nvx_vbios.c nvx_vbios.h nvx_gsp.h nvx_openrm_shim.c nvx_openrm_containers.c $(OPENRM_POLICY) $(OPENRM_CONTAINERS) $(OPENRM_CONTAINER_HEADERS) nvx_openrm_channel_flags_generated.h nvx_openrm_policy_view.h nvx_openrm_shim.h miniport.h bootloader_blob.h booter_load_blob.h gsp_blob32.o $(OPEN_GPU_DIR)/src/common/shared/msgq/msgq.c
-	$(CC32) $(CFLAGS32) -o $@ nvxmp.c nvx_gsp.c nvx_gr_context.c nvx_mmu.c nvx_vbe.c nvx_fw.c nvx_vbios.c nvx_rpc.c nvx_seq.c nvx_openrm_shim.c nvx_openrm_containers.c $(OPENRM_POLICY) $(OPENRM_CONTAINERS) $(OPEN_GPU_DIR)/src/common/shared/msgq/msgq.c gsp_blob32.o $(LDFLAGS32)
+nvxmp32.sys: $(SOURCES) $(HEADERS)
+	$(CC32) $(CFLAGS32) -o $@ $(SOURCES) $(LDFLAGS32)
 
 libvideoprt.a: videoprt.def
-	x86_64-w64-mingw32-dlltool -d videoprt.def -l libvideoprt.a
+	x86_64-w64-mingw32-dlltool -d videoprt.def -l $@
+
+# The x86 build links MinGW's own libvideoprt.a (stdcall-decorated imports);
+# MinGW ships none for x64, hence the generated one above.
 
 clean:
-	rm -f nvxmp.sys nvxmp32.sys libvideoprt.a gsp_blob.o gsp_blob32.o
+	rm -f nvxmp.sys nvxmp32.sys libvideoprt.a
+
+HOSTFLAGS = -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
+            -DNVX_HOST_TEST -I. -Itests
+BUILD ?= /tmp/nvx-host-tests
 
 .PHONY: check
-check:
-	python3 ../test/audit_ampere_vertex_shader.py
-	python3 ../test/generate_nvc0_address_pairs.py ../mesa nvx_nvc0_address_pairs.h --check
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I. -o /tmp/nvx-3d-abi-test tests/3d_abi_test.c
-	ASAN_OPTIONS=detect_leaks=0 /tmp/nvx-3d-abi-test
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I. -I../mesa_patches -o /tmp/nvx-winsys-test ../mesa_patches/nvx_winsys.c ../mesa_patches/nvx_nouveau_device.c ../mesa_patches/nvx_nouveau_bo.c ../mesa_patches/nvx_nouveau_pushbuf.c ../mesa_patches/nvx_nouveau_screen.c ../test/nvx_winsys_test.c
-	ASAN_OPTIONS=detect_leaks=0 /tmp/nvx-winsys-test
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I../mesa_patches -I../mesa_patches/xp_include -I../mesa/include -I../mesa/src/nouveau/drm -o /tmp/nvx-xf86drm-test ../mesa_patches/nvx_xf86drm.c ../mesa_patches/nvx_nouveau_bo.c ../mesa_patches/nvx_winsys.c ../test/xf86drm_shim_test.c
-	ASAN_OPTIONS=detect_leaks=0 /tmp/nvx-xf86drm-test
-	i686-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I../mesa_patches/xp_include -I../mesa/include -I../mesa/src/nouveau/drm -o /tmp/nvx-xf86drm-x86.o ../mesa_patches/nvx_xf86drm.c
-	x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I../mesa_patches/xp_include -I../mesa/include -I../mesa/src/nouveau/drm -o /tmp/nvx-xf86drm-x64.o ../mesa_patches/nvx_xf86drm.c
-	i686-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I. -I../mesa_patches -o /tmp/nvx-nouveau-pushbuf-x86.o ../mesa_patches/nvx_nouveau_pushbuf.c
-	x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I. -I../mesa_patches -o /tmp/nvx-nouveau-pushbuf-x64.o ../mesa_patches/nvx_nouveau_pushbuf.c
-	i686-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I. -I../mesa_patches -o /tmp/nvx-nouveau-screen-x86.o ../mesa_patches/nvx_nouveau_screen.c
-	x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I. -I../mesa_patches -o /tmp/nvx-nouveau-screen-x64.o ../mesa_patches/nvx_nouveau_screen.c
-	i686-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I. -I../mesa_patches -o /tmp/nvx-nouveau-device-x86.o ../mesa_patches/nvx_nouveau_device.c
-	x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I. -I../mesa_patches -o /tmp/nvx-nouveau-device-x64.o ../mesa_patches/nvx_nouveau_device.c
-	i686-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I. -I../mesa_patches -o /tmp/nvx-nouveau-bo-x86.o ../mesa_patches/nvx_nouveau_bo.c
-	x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I. -I../mesa_patches -o /tmp/nvx-nouveau-bo-x64.o ../mesa_patches/nvx_nouveau_bo.c
-	i686-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I. -o /tmp/nvx-3d-abi-x86.o tests/3d_abi_test.c
-	x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -c -I. -o /tmp/nvx-3d-abi-x64.o tests/3d_abi_test.c
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I. -o /tmp/nvx-gr-context-test tests/gr_context_test.c nvx_gr_context.c
-	ASAN_OPTIONS=detect_leaks=0 /tmp/nvx-gr-context-test
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I. -o /tmp/nvx-display-test tests/display_test.c
-	ASAN_OPTIONS=detect_leaks=0 /tmp/nvx-display-test
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I. -o /tmp/nvx-mmu-test tests/mmu_test.c nvx_mmu.c
-	ASAN_OPTIONS=detect_leaks=0 /tmp/nvx-mmu-test
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I. -o /tmp/nvx-seq-test tests/seq_test.c nvx_seq.c
-	ASAN_OPTIONS=detect_leaks=0 /tmp/nvx-seq-test
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I. -o /tmp/nvx-rpc-test tests/rpc_test.c nvx_rpc.c
-	ASAN_OPTIONS=detect_leaks=0 /tmp/nvx-rpc-test
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I. -o /tmp/nvx-firmware-test tests/firmware_test.c nvx_fw.c
-	ASAN_OPTIONS=detect_leaks=0 /tmp/nvx-firmware-test
-	sh tests/run_gsp_host_test.sh
-	sh tests/run_vbe_host_test.sh
-	sh tests/run_openrm_shim_test.sh
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I. -Iinclude -I$(OPEN_GPU_DIR)/src/common/sdk/nvidia/inc -I$(OPEN_GPU_DIR)/src/common/inc -I$(OPEN_GPU_DIR)/src/nvidia/arch/nvalloc/common/inc -I$(OPEN_GPU_DIR)/src/common/shared/msgq/inc -o /tmp/nvx-vbios-test tests/vbios_test.c nvx_vbios.c
-	ASAN_OPTIONS=detect_leaks=0 /tmp/nvx-vbios-test
-
-HOSTCC ?= cc
-
-.PHONY: package package-full package-probe full full-gr-probe probe
-package: all
-	cp nvxmp.sys ../dist/nvxmp.sys
-	genisoimage -quiet -J -R -o ../nvx_driver.iso ../dist
-
-# Keep the known-good VBE package separate from the experimental GSP build.
-full: EXPERIMENTAL_GSP=1
-full: nvxmp.sys
-
-full32: EXPERIMENTAL_GSP=1
-full32: nvxmp32.sys
-
-package-full: EXPERIMENTAL_GSP=1
-package-full: all
-	[ ! -f ../dist/nvxdisp.dll ] || cp ../dist/nvxdisp.dll ../dist_full/nvxdisp.dll
-	cp nvxmp.sys ../dist_full/nvxmp.sys
-	genisoimage -quiet -J -R -o ../nvx_driver_full.iso ../dist_full
-
-# This deliberately unsafe diagnostic reproduces the SEC2 0x91 result without
-# being confused with the boot-safe full-development package.
-probe: EXPERIMENTAL_GSP=1
-probe: UNSAFE_GSP_PROBE=1
-probe: nvxmp.sys
-
-# The RM-managed GR channel setup is included in normal full builds. The
-# dedicated target remains useful for isolating it from other probe options.
-full-gr-probe: EXPERIMENTAL_GSP=1
-full-gr-probe: NVX_ENABLE_GR_CHANNEL_PROBE=1
-full-gr-probe: nvxmp.sys
-
-package-probe: EXPERIMENTAL_GSP=1
-package-probe: UNSAFE_GSP_PROBE=1
-package-probe: all
-	mkdir -p ../dist_probe
-	cp ../dist_full/nvx.inf ../dist_full/gsp_ga104.bin ../dist_probe/
-	cp ../dist/nvxdisp.dll ../dist_probe/nvxdisp.dll
-	cp nvxmp.sys ../dist_probe/nvxmp.sys
-	genisoimage -quiet -J -R -o ../nvx_driver_probe.iso ../dist_probe
+check: all
+	python3 tools/gen_pascal_ids.py --check
+	mkdir -p $(BUILD)
+	$(HOSTCC) $(HOSTFLAGS) -o $(BUILD)/chip tests/chip_test.c nvx_chip.c
+	$(BUILD)/chip
+	$(HOSTCC) $(HOSTFLAGS) -o $(BUILD)/swblt tests/swblt_test.c nvx_swblt.c
+	$(BUILD)/swblt
+	$(HOSTCC) $(HOSTFLAGS) -o $(BUILD)/vbe tests/vbe_mock_test.c nvx_vbe.c
+	ASAN_OPTIONS=detect_leaks=0 $(BUILD)/vbe
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I. -o $(BUILD)/3d-abi tests/3d_abi_test.c
+	ASAN_OPTIONS=detect_leaks=0 $(BUILD)/3d-abi
+	python3 tools/check_imports.py nvxmp.sys nvxmp32.sys

@@ -557,4 +557,3 @@ VP_STATUS VPAPI VideoPortCreateSecondaryDisplay(
     ULONG ulFlag
 );
 VP_STATUS VPAPI VideoPortEnumerateChildren(PVOID HwDeviceExtension, PVOID Reserved);
-VOID NvxProbeFwsecRom(PVOID hwDeviceExtension, PUCHAR bar0);
