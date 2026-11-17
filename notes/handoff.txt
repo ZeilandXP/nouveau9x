@@ -1,6 +1,26 @@
 # Windows XP x64 OpenGL handoff
 
-Updated November 16, 2026. Latest tested package: **3.0.0.237**.
+Updated November 16, 2026. Latest tested package: **3.0.0.240**.
+
+## Latest x86 / 3DMark preparation (3.0.0.240)
+
+The x86 Mesa WGL ICD is now built and installed in XP x64 `SysWOW64`. On the
+RTX 3070, 32-bit `wglgears` reported `GL_RENDERER = NV170` and rendered 98
+frames in six seconds (16.333 FPS). The full hardware log is
+`test_logs/v3.0.0.240-20261116-185634.log`. Its guest batch did not reach the
+completion marker before the runner's 180-second desktop timeout, so the x86
+process return code is not captured; the renderer, frames, and 3D-session
+cleanup are recorded.
+
+`3DMark05_v130_1901.exe` is copied to both the Administrator and All Users
+desktops in `winxp_x64.qcow2`. The x86 `nvxogl32.dll`, `d3d9.dll`, and
+`wined3d.dll` are present in `WINDOWS/SysWOW64`; the OpenGL hardware route is
+verified by x86 gears. The automatic Startup benchmark was disabled (the
+batch is retained as `run_accel_test.bat.disabled`) so the desktop is usable.
+3DMark itself has not been run. It is a 32-bit Direct3D 9 workload, and its
+hardware route through WineD3D to the Nouveau WGL ICD remains unverified; the
+existing 64-bit D3D9 smoke test crashes, so do not count 3DMark acceleration as
+proven until its renderer/result is checked in the guest.
 
 ## Current verified status
 
@@ -10,7 +30,7 @@ shows complete red, green and blue gears. Its GL back-buffer readback and GDI
 client-area capture are byte-for-byte identical at 300x300, including RGB
 coverage (red=17214, green=4750, blue=3637). glReadPixels reports no GL error.
 
-Latest VFIO log: `test_logs/v3.0.0.237-20261116-181922.log` (vm_serial.log).
+Latest image-capture verification: `test_logs/v3.0.0.237-20261116-181922.log`.
 Captures with that prefix: `-wglgears-render.ppm`, `-wglgears-present.ppm`,
 and a host-converted `-wglgears-render.png` for viewing. This proves the sampled
 image reaches the window unchanged; it is not exhaustive rendering validation.
@@ -22,9 +42,9 @@ image reaches the window unchanged; it is not exhaustive rendering validation.
   including a READ-labelled mapping. Samples check at most 64 bytes per range.
 - Host checks and XP import/subsystem audits passed. Mesa is clean after the
   build script restored its temporary patches. VM has shut down.
-- Full runner exits 0 and its hardware OpenGL gate passes. Guest suite still
-  has failures: D3D9 crashes with 0xC0000005 and x86 gears lacks a matching ICD.
-  The batch's ALL_BENCHMARKS_FINISHED PASS is unconditional and overstates this.
+- v240 confirms x86 gears uses NV170 and renders on hardware. The runner
+  initiated shutdown at its 180-second desktop timeout, before the guest batch
+  completion marker or x86 child return code appeared. D3D9 remains unresolved.
 - One firmware assertion is logged during initialization, as in earlier runs.
 
 ## Changes that restored drawing
@@ -86,13 +106,12 @@ PTE encoding and kernel ownership; Nouveau generates OpenGL draw/target state.
    coherency correctness while optimizing. Captures and first-48 range sample
    readbacks themselves add diagnostic overhead; current FPS is not a clean
    production benchmark. Fine-grained changed runs may issue many small uploads.
-2. **32-bit ICD missing:** only x64 nvxogl64.dll and nvxmesa.dll are packaged.
-   install.bat removes the Wow6432Node ICD entry. The x86 gears process cannot
-   load x64 DLLs and reports context error 183. Hardware-labelled display pixel
-   formats do not prove an x86 ICD exists. Build/deploy/register an x86 ICD and
-   log per-DLL loader errors. This x86 failure is not proof of broken repeated
-   x64 context/channel creation. Test that lifecycle independently.
-3. **WineD3D:** D3D9 loads and creates IDirect3D9, identifies its adapter as GTX
+2. **Direct3D / 3DMark05:** the x86 WGL ICD and x86 WineD3D runtime are now
+   installed and x86 WGL hardware rendering is verified. 3DMark05 itself has
+   not been run. Verify its 32-bit D3D9-to-WineD3D-to-WGL path and capture the
+   renderer and benchmark result; the existing 64-bit D3D9 smoke test crashes
+   with 0xC0000005, so a successful WGL gears run does not establish D3D9 works.
+3. **WineD3D identity / crash:** D3D9 loads and creates IDirect3D9, identifies its adapter as GTX
    470/nv4_disp.dll, then the 64-bit test crashes (0xC0000005). Trace the failing
    D3D caps/device call and collect a crash address/stack. The adapter name is
    consistent with WineD3D's capability-based fallback identity, not a change
@@ -136,7 +155,9 @@ PTE encoding and kernel ownership; Nouveau generates OpenGL draw/target state.
   test/update_disk_driver_user.sh: offline installation/guest test batch.
 - test/build_mesa_xp64.sh and test/apply_mesa_xp_patches.sh: Mesa package build;
   upstream submodules stay unchanged after build. dist_full/install.bat and
-  dist_full/nvx.inf: ICD registration. test/wined3d_xp: packaged WineD3D DLLs.
+  dist_full/nvx.inf: ICD registration. `test/mesa_xp32.ini` and
+  `test/build_mesa_xp32.sh`: x86 ICD build. `mesa_patches/nvx_win32_xp_tick.c`
+  supplies the XP tick-count import shim. test/wined3d_xp: packaged WineD3D DLLs.
 
 Commits this session: ea62e17 (dirty publication), 74a2f61 (allocation kinds),
 67d04fc (partial-upload freshness), ace556d (TLS alignment and target captures).
